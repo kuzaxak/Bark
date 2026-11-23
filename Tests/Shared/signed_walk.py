@@ -82,13 +82,16 @@ class Screen:
     def click(self, relative, flags=0):
         self.guard()
         q = self.quartz
-        bounds = self.windows()[0]["kCGWindowBounds"]
+        window = self.windows()[0]
+        bounds = window["kCGWindowBounds"]
         x, y = relative
         if not 0 <= x < bounds["Width"] or not 0 <= y < bounds["Height"]:
             raise RuntimeError(f"Click {relative} is outside the target window")
         point = (bounds["X"] + x, bounds["Y"] + y)
-        self.last_click = {"relative": list(relative), "point": list(point), "window": dict(bounds),
-                           "before": self.surroundings(point)}
+        before = self.surroundings(point)
+        self.last_click = {"relative": list(relative), "point": list(point), "window": dict(bounds), "before": before}
+        if cover := self.covering(before["windows_at_point"], window["kCGWindowNumber"]):
+            raise RuntimeError(f"{cover['owner']} window covers the click point")
 
         def post(kind, event_flags=0):
             event = q.CGEventCreateMouseEvent(self.source, kind, point, 0)
@@ -103,6 +106,15 @@ class Screen:
         post(q.kCGEventLeftMouseUp, flags)
         self.guard(point)
         self.point = point
+
+    def covering(self, stack, number):
+        for row in stack:
+            if row["number"] == number:
+                return None
+            # The Dock keeps a transparent window over the whole display that lets clicks through.
+            if row["pid"] != self.pid and (row["owner"], row["layer"]) != ("Dock", self.quartz.kCGDockWindowLevel):
+                return row
+        return None
 
     def hover(self, point):
         self.guard()

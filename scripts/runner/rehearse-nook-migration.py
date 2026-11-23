@@ -5,7 +5,7 @@
 import argparse
 from contextlib import contextmanager
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 from pathlib import Path
 import plistlib
@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 from bark_release import SPARKLE, SPARKLE_PUBLIC_KEY, TEAM, bundle_cdhash, developer_id_requirement
+from loopback_server import LoopbackHTTPServer
 
 RELEASES = "https://github.com/kuzaxak/Bark/releases"
 NOOK_FEED = "https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml"
@@ -106,7 +107,7 @@ def loopback_feed(feed, image, canonical_url):
             else:
                 self.send_error(404)
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    with LoopbackHTTPServer(Handler) as server:
         url = f"http://127.0.0.1:{server.server_port}"
         literal_url = f'url="{canonical_url}"'.encode()
         if feed.count(literal_url) != 1:

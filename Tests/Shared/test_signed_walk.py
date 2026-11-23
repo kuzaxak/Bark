@@ -1,6 +1,6 @@
 """Offline checks for the signed walk's native-architecture preflight."""
 
-from contextlib import contextmanager, nullcontext, redirect_stdout
+from contextlib import ExitStack, contextmanager, nullcontext, redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -14,6 +14,14 @@ from unittest.mock import Mock, patch
 
 import signed_walk
 from signed_walk import REPO, Screen, ScreenUnavailable, verify_native_candidate
+
+
+@contextmanager
+def refused_name_lookups():
+    with ExitStack() as stack:
+        for name in ("getfqdn", "gethostbyaddr", "gethostbyname", "gethostbyname_ex", "gethostname", "getnameinfo"):
+            stack.enter_context(patch(f"socket.{name}", side_effect=AssertionError(f"socket.{name} was called")))
+        yield
 
 
 class InputOwnershipTests(unittest.TestCase):
@@ -39,21 +47,21 @@ class InputOwnershipTests(unittest.TestCase):
 
 
 class ClickDiagnosticsTests(unittest.TestCase):
-    def failed_click(self, *, lock_lost):
+    def failed_click(self, *, lock_lost=False, covered=False):
         pid = 4321
+        banner = {"kCGWindowOwnerName": "NotificationCenter", "kCGWindowOwnerPID": 99, "kCGWindowLayer": 23,
+                  "kCGWindowNumber": 12, "kCGWindowBounds": {"X": 380, "Y": 150, "Width": 360, "Height": 80}}
         rows = [
-            {"kCGWindowOwnerName": "NotificationCenter", "kCGWindowOwnerPID": 99, "kCGWindowLayer": 23,
-             "kCGWindowNumber": 12, "kCGWindowBounds": {"X": 380, "Y": 150, "Width": 360, "Height": 80}},
+            {"kCGWindowOwnerName": "Dock", "kCGWindowOwnerPID": 77, "kCGWindowLayer": 20, "kCGWindowNumber": 3,
+             "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1440, "Height": 900}},
             {"kCGWindowOwnerName": "Bark", "kCGWindowOwnerPID": pid, "kCGWindowLayer": 0, "kCGWindowNumber": 41,
              "kCGWindowBounds": {"X": 600, "Y": 60, "Width": 320, "Height": 120}},
             {"kCGWindowOwnerName": "Bark", "kCGWindowOwnerPID": pid, "kCGWindowLayer": 0, "kCGWindowNumber": 40,
              "kCGWindowBounds": {"X": 50, "Y": 40, "Width": 900, "Height": 660}},
-            {"kCGWindowOwnerName": "Dock", "kCGWindowOwnerPID": 77, "kCGWindowLayer": 20, "kCGWindowNumber": 3,
-             "kCGWindowBounds": {"X": 0, "Y": 840, "Width": 1440, "Height": 60}},
         ]
-        desktop = {"pointer": (5.0, 5.0), "owned": True}
-        quartz = Mock()
-        quartz.CGWindowListCopyWindowInfo.return_value = rows
+        desktop = {"pointer": (5.0, 5.0), "owned": True, "banner": covered}
+        quartz = Mock(kCGDockWindowLevel=20)
+        quartz.CGWindowListCopyWindowInfo.side_effect = lambda *_: [banner, *rows] if desktop["banner"] else rows
         quartz.CGEventCreateMouseEvent.side_effect = lambda source, kind, point, button: point
         quartz.CGEventPost.side_effect = lambda tap, point: desktop.update(pointer=point)
         quartz.CGEventGetLocation.side_effect = lambda event: SimpleNamespace(
@@ -88,7 +96,7 @@ class ClickDiagnosticsTests(unittest.TestCase):
 
         def exercise(screen, _process, _events, _output):
             screen.click((378, 133))
-            desktop["owned"] = not lock_lost
+            desktop.update(owned=not lock_lost, banner=True)
             raise RuntimeError("Missing pointer event on /source")
 
         def lsappinfo(command, text):
@@ -115,13 +123,15 @@ class ClickDiagnosticsTests(unittest.TestCase):
                     patch("bark_macos_console.require_idle_console"), \
                     patch("subprocess.check_output", side_effect=lsappinfo), patch("subprocess.run"), \
                     patch("time.sleep"), redirect_stdout(log), \
-                    self.assertRaisesRegex(RuntimeError, "Missing pointer event on /source"):
+                    self.assertRaises(RuntimeError) as failure:
                 signed_walk.run_walk("fixture", "fixture", serve, exercise)
             evidence = json.loads((output / "click-diagnostics.json").read_text())
-        return evidence, log.getvalue(), quartz, ax, foundation, output
+        return str(failure.exception), evidence, log.getvalue(), quartz, ax, foundation, output
 
     def test_missed_click_records_what_was_under_the_point(self):
-        evidence, log, quartz, ax, foundation, output = self.failed_click(lock_lost=False)
+        failure, evidence, log, quartz, ax, foundation, output = self.failed_click()
+        self.assertEqual(failure, "Missing pointer event on /source")
+        self.assertEqual([row["owner"] for row in evidence["click"]["before"]["windows_at_point"]], ["Dock", "Bark"])
         self.assertEqual(evidence["click"]["relative"], [378, 133])
         self.assertEqual(evidence["click"]["point"], [428, 173])
         self.assertEqual(evidence["click"]["before"]["frontmost"], {"pid": 4321, "name": "Bark"})
@@ -131,7 +141,7 @@ class ClickDiagnosticsTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in evidence["click"]["before"]["candidate_windows"]], [41, 40])
         stack = evidence["at_failure"]["windows_at_point"]
         self.assertEqual([(row["owner"], row["pid"], row["layer"]) for row in stack],
-                         [("NotificationCenter", 99, 23), ("Bark", 4321, 0)])
+                         [("NotificationCenter", 99, 23), ("Dock", 77, 20), ("Bark", 4321, 0)])
         self.assertEqual(stack[0]["bounds"], {"X": 380, "Y": 150, "Width": 360, "Height": 80})
         self.assertEqual(evidence["at_failure"]["pointer"], [428, 173])
         self.assertEqual(evidence["element_at_point"], {"pid": 99, "AXRole": "AXGroup", "AXDescription": "Notification"})
@@ -147,10 +157,28 @@ class ClickDiagnosticsTests(unittest.TestCase):
         self.assertIn("AXGroup", log)
 
     def test_display_is_not_captured_without_the_screen_lock(self):
-        evidence, _, quartz, _, _, _ = self.failed_click(lock_lost=True)
+        _, evidence, _, quartz, _, _, _ = self.failed_click(lock_lost=True)
         self.assertIsNone(evidence["screenshot"])
         quartz.CGWindowListCreateImage.assert_not_called()
         self.assertEqual(evidence["element_at_point"]["AXRole"], "AXGroup")
+
+    def test_another_apps_window_over_the_point_fails_before_any_pointer_event(self):
+        failure, evidence, log, quartz, _, _, _ = self.failed_click(covered=True)
+        self.assertEqual(failure, "NotificationCenter window covers the click point")
+        quartz.CGEventCreateMouseEvent.assert_not_called()
+        quartz.CGEventPost.assert_not_called()
+        self.assertEqual(evidence["failure"], failure)
+        self.assertEqual([row["owner"] for row in evidence["click"]["before"]["windows_at_point"]],
+                         ["NotificationCenter", "Dock", "Bark"])
+        self.assertEqual(evidence["screenshot"], "display.png")
+        self.assertIn("click-diagnostics.json", log)
+
+
+class LoopbackFixtureTests(unittest.TestCase):
+    def test_startup_fixture_binds_loopback_without_name_lookups(self):
+        serve = runpy.run_path(str(REPO / "Tests/ChromiumStartup/walk.py"))["serve"]
+        with refused_name_lookups(), serve() as server:
+            self.assertEqual(server.socket.getsockname()[0], "127.0.0.1")
 
 
 class NativeArchitectureTests(unittest.TestCase):
