@@ -56,6 +56,7 @@ class Screen:
         self.console, self.owns_screen, self.pid, self.point = console, owns_screen, pid, point
         self.launch_started_ns = launch_started_ns
         self.source = quartz.CGEventSourceCreate(quartz.kCGEventSourceStateHIDSystemState)
+        self.last_click = None
 
     def guard(self, target=None):
         if not self.owns_screen() or not self.console.available():
@@ -86,6 +87,8 @@ class Screen:
         if not 0 <= x < bounds["Width"] or not 0 <= y < bounds["Height"]:
             raise RuntimeError(f"Click {relative} is outside the target window")
         point = (bounds["X"] + x, bounds["Y"] + y)
+        self.last_click = {"relative": list(relative), "point": list(point), "window": dict(bounds),
+                           "before": self.surroundings(point)}
 
         def post(kind, event_flags=0):
             event = q.CGEventCreateMouseEvent(self.source, kind, point, 0)
@@ -160,10 +163,96 @@ class Screen:
                                                self.windows()[0]["kCGWindowNumber"], q.kCGWindowImageBoundsIgnoreFraming)
         if not picture:
             raise RuntimeError("Candidate window capture failed")
+        if not self.write_png(picture, path):
+            raise RuntimeError("Writing the candidate window capture failed")
+
+    def write_png(self, picture, path):
+        q = self.quartz
         destination = q.CGImageDestinationCreateWithURL(self.url.fileURLWithPath_(str(path)), "public.png", 1, None)
         q.CGImageDestinationAddImage(destination, picture, None)
-        if not q.CGImageDestinationFinalize(destination):
-            raise RuntimeError("Writing the candidate window capture failed")
+        return q.CGImageDestinationFinalize(destination)
+
+    def attribute(self, element, name):
+        if element is None:
+            return None
+        status, value = self.ax.AXUIElementCopyAttributeValue(element, name, None)
+        return value if status == 0 else None
+
+    def describe(self, element):
+        if element is None:
+            return None
+        return {"pid": self.ax.AXUIElementGetPid(element, None)[1],
+                **{name: str(value) for name in ("AXRole", "AXSubrole", "AXTitle", "AXDescription")
+                   if (value := self.attribute(element, name)) is not None}}
+
+    def location(self):
+        pointer = self.quartz.CGEventGetLocation(self.quartz.CGEventCreate(None))
+        return [pointer.x, pointer.y]
+
+    def frontmost(self):
+        asn = subprocess.check_output(["lsappinfo", "front"], text=True).strip()
+        info = subprocess.check_output(["lsappinfo", "info", "-only", "pid", "-only", "name", asn], text=True)
+        fields = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
+        pid = fields.get('"pid"', "")
+        return {"pid": int(pid) if pid.isdigit() else None, "name": fields.get('"LSDisplayName"', "").strip('"')}
+
+    def surroundings(self, point):
+        q = self.quartz
+        front = self.frontmost()
+        application = self.ax.AXUIElementCreateApplication(front["pid"]) if front["pid"] else None
+        rows = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID)
+
+        def entry(row):
+            return {"owner": row.get("kCGWindowOwnerName"), "pid": row["kCGWindowOwnerPID"],
+                    "layer": row["kCGWindowLayer"], "number": row["kCGWindowNumber"],
+                    "name": row.get("kCGWindowName"), "alpha": row.get("kCGWindowAlpha"),
+                    "bounds": dict(row["kCGWindowBounds"])}
+
+        def under(bounds):
+            return (bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
+                    and bounds["Y"] <= point[1] < bounds["Y"] + bounds["Height"])
+
+        return {
+            "pointer": self.location(),
+            "frontmost": front,
+            "key_window": self.describe(self.attribute(application, "AXFocusedWindow")),
+            "windows_at_point": [entry(row) for row in rows if under(row["kCGWindowBounds"])],
+            "candidate_windows": [entry(row) for row in rows if row["kCGWindowOwnerPID"] == self.pid],
+        }
+
+    def display(self, point):
+        q = self.quartz
+        error, displays, count = q.CGGetDisplaysWithPoint(point, 1, None, None)
+        if error or not count:
+            return None
+        bounds = q.CGDisplayBounds(displays[0])
+        pixels = q.CGDisplayModeGetPixelWidth(q.CGDisplayCopyDisplayMode(displays[0]))
+        return {"id": displays[0], "scale": pixels / bounds.size.width,
+                "bounds": [bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height]}
+
+    def record_failure(self, output, failure):
+        ax, q = self.ax, self.quartz
+        point = self.last_click["point"] if self.last_click else self.location()
+        _, element = ax.AXUIElementCopyElementAtPosition(ax.AXUIElementCreateSystemWide(), point[0], point[1], None)
+        evidence = {"failure": str(failure), "candidate_pid": self.pid, "click": self.last_click,
+                    "display": self.display(point), "at_failure": self.surroundings(point),
+                    "element_at_point": self.describe(element), "screenshot": None}
+        if self.owns_screen():
+            picture = q.CGWindowListCreateImage(q.CGRectInfinite, q.kCGWindowListOptionOnScreenOnly,
+                                                q.kCGNullWindowID, q.kCGWindowImageDefault)
+            if picture and self.write_png(picture, output / "display.png"):
+                evidence["screenshot"] = "display.png"
+        path = output / "click-diagnostics.json"
+        path.write_text(json.dumps(evidence, indent=2, default=str) + "\n")
+        before = (self.last_click or {}).get("before") or {}
+        print(f"Click diagnostics in {path}:", json.dumps({
+            "point": point, "display": evidence["display"],
+            "before_click": {key: before.get(key) for key in ("frontmost", "key_window")},
+            "at_failure": {key: evidence["at_failure"][key] for key in ("pointer", "frontmost", "key_window")},
+            "windows_at_point": [{key: row[key] for key in ("owner", "pid", "layer", "bounds")}
+                                 for row in evidence["at_failure"]["windows_at_point"]],
+            "element_at_point": evidence["element_at_point"], "screenshot": evidence["screenshot"],
+        }, default=str), flush=True)
 
 
 class Accessibility:
@@ -352,7 +441,11 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
                                 app, qualification["bundle_cdhash"], root, profile, log, contributor["app_output_lock"])
                             try:
                                 screen = Screen(console, owns_screen, proc.pid, pointer, launch_started_ns)
-                                phase(screen, proc, server.events, output)
+                                try:
+                                    phase(screen, proc, server.events, output)
+                                except RuntimeError as failure:
+                                    screen.record_failure(output, failure)
+                                    raise
                                 pointer = screen.point
                                 if proc.wait(timeout=30) != 0:
                                     raise RuntimeError("The signed candidate did not quit cleanly")
