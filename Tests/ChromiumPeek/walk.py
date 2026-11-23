@@ -2,7 +2,7 @@
 """Walk a signed Bark candidate with a new disposable profile."""
 
 from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 from pathlib import Path
 import signal
@@ -13,6 +13,7 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "Shared"))
 from signed_walk import run_walk, wait_for
+from loopback_server import LoopbackHTTPServer
 
 SIDEBAR_WIDTH = 247
 PAGE_MARGIN = 10
@@ -48,7 +49,7 @@ class Fixture(BaseHTTPRequestHandler):
 
 @contextmanager
 def serve():
-    with ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
+    with LoopbackHTTPServer(Fixture) as server:
         server.html = (HERE / "fixture.html").read_text()
         server.events = []
         thread = Thread(target=server.serve_forever, daemon=True)

@@ -395,5 +395,15 @@ class PortableUpdateKitTests(unittest.TestCase):
             self.assertIsNone(args.output)
 
 
+class LoopbackServerTests(unittest.TestCase):
+    def test_update_server_binds_loopback_without_name_lookups(self):
+        with contextlib.ExitStack() as stack:
+            for name in ("getfqdn", "gethostbyaddr", "gethostbyname", "gethostbyname_ex", "gethostname", "getnameinfo"):
+                stack.enter_context(patch(f"socket.{name}", side_effect=AssertionError(f"socket.{name} was called")))
+            server = stack.enter_context(walk.UpdateServer("bark-macos-arm64.xml"))
+            self.assertEqual(server.socket.getsockname()[0], "127.0.0.1")
+            self.assertEqual(server.origin, f"http://127.0.0.1:{server.server_port}")
+
+
 if __name__ == "__main__":
     unittest.main()

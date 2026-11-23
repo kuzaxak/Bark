@@ -7,7 +7,7 @@ import base64
 import contextlib
 import filecmp
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
@@ -32,6 +32,7 @@ from bark_icloud_signing import PROFILE_NAME
 from bark_macos_console import (
     QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, ScreenUnavailable, require_idle_console, screen_lock,
 )
+from loopback_server import LoopbackHTTPServer
 from signed_walk import Screen, crash_reports, processes, verify_pinned_sdk, wait_for
 from update_kit import (KIT_FILES, MANIFEST, VERSIONS, image_route, load_kit, mount_app, profile_workspace,
                         rehearsal_settings, write_kit)
@@ -65,9 +66,9 @@ report('restored');
 </script>"""
 
 
-class UpdateServer(ThreadingHTTPServer):
+class UpdateServer(LoopbackHTTPServer):
     def __init__(self, feed, port=0):
-        super().__init__(("127.0.0.1", port), UpdateRequest)
+        super().__init__(UpdateRequest, port)
         self.feed = "/" + feed
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.requests = []
