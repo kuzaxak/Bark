@@ -108,11 +108,13 @@ class Screen:
         self.point = point
 
     def covering(self, stack, number):
+        q = self.quartz
+        # The Dock's transparent full-display window and the window server's pointer window let clicks through.
+        passthrough = {("Dock", q.kCGDockWindowLevel), ("Window Server", q.kCGCursorWindowLevel)}
         for row in stack:
             if row["number"] == number:
                 return None
-            # The Dock keeps a transparent window over the whole display that lets clicks through.
-            if row["pid"] != self.pid and (row["owner"], row["layer"]) != ("Dock", self.quartz.kCGDockWindowLevel):
+            if row["pid"] != self.pid and (row["owner"], row["layer"]) not in passthrough:
                 return row
         return None
 

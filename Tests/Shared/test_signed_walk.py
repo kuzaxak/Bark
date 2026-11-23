@@ -47,7 +47,7 @@ class InputOwnershipTests(unittest.TestCase):
 
 
 class ClickDiagnosticsTests(unittest.TestCase):
-    def failed_click(self, *, lock_lost=False, covered=False):
+    def failed_click(self, *, lock_lost=False, covered=False, cursor=False):
         pid = 4321
         banner = {"kCGWindowOwnerName": "NotificationCenter", "kCGWindowOwnerPID": 99, "kCGWindowLayer": 23,
                   "kCGWindowNumber": 12, "kCGWindowBounds": {"X": 380, "Y": 150, "Width": 360, "Height": 80}}
@@ -59,8 +59,12 @@ class ClickDiagnosticsTests(unittest.TestCase):
             {"kCGWindowOwnerName": "Bark", "kCGWindowOwnerPID": pid, "kCGWindowLayer": 0, "kCGWindowNumber": 40,
              "kCGWindowBounds": {"X": 50, "Y": 40, "Width": 900, "Height": 660}},
         ]
+        if cursor:
+            rows.insert(0, {"kCGWindowOwnerName": "Window Server", "kCGWindowOwnerPID": 159,
+                            "kCGWindowLayer": 2147483630, "kCGWindowNumber": 3, "kCGWindowName": "Cursor",
+                            "kCGWindowAlpha": 1, "kCGWindowBounds": {"X": 416, "Y": 153, "Width": 23, "Height": 22}})
         desktop = {"pointer": (5.0, 5.0), "owned": True, "banner": covered}
-        quartz = Mock(kCGDockWindowLevel=20)
+        quartz = Mock(kCGDockWindowLevel=20, kCGCursorWindowLevel=2147483630)
         quartz.CGWindowListCopyWindowInfo.side_effect = lambda *_: [banner, *rows] if desktop["banner"] else rows
         quartz.CGEventCreateMouseEvent.side_effect = lambda source, kind, point, button: point
         quartz.CGEventPost.side_effect = lambda tap, point: desktop.update(pointer=point)
@@ -172,6 +176,16 @@ class ClickDiagnosticsTests(unittest.TestCase):
                          ["NotificationCenter", "Dock", "Bark"])
         self.assertEqual(evidence["screenshot"], "display.png")
         self.assertIn("click-diagnostics.json", log)
+
+    def test_pointer_window_over_the_point_does_not_block_the_click(self):
+        failure, evidence, _, quartz, _, _, _ = self.failed_click(cursor=True)
+        self.assertEqual(failure, "Missing pointer event on /source")
+        self.assertEqual([row["owner"] for row in evidence["click"]["before"]["windows_at_point"]],
+                         ["Window Server", "Dock", "Bark"])
+        self.assertEqual([call.args[1:3] for call in quartz.CGEventCreateMouseEvent.call_args_list],
+                         [(quartz.kCGEventMouseMoved, (428, 173)), (quartz.kCGEventLeftMouseDown, (428, 173)),
+                          (quartz.kCGEventLeftMouseUp, (428, 173))])
+        self.assertEqual(quartz.CGEventPost.call_count, 3)
 
 
 class LoopbackFixtureTests(unittest.TestCase):
