@@ -203,6 +203,31 @@ class OfficialQualificationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "release app does not match"):
                     qualify.check_release_receipt(receipt, image, "arm64", app)
 
+    def test_release_image_is_checked_without_a_walk_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.run_candidate(root)
+            (root / "evidence/qualification.json").unlink()
+            image = root / "candidate.dmg"
+            installed = root / "private install/Bark.app"
+            with patch.object(qualify, "shell_source_digest", return_value="f" * 64), \
+                    patch.object(qualify.subprocess, "run") as run_tool, \
+                    patch.object(qualify.bark_release, "verify_installed_image",
+                                 side_effect=self.verify_fixture_copy) as verify_image, \
+                    patch.object(qualify.runpy, "run_path", return_value={}) as load, \
+                    patch.object(qualify, "verify_official_sdk", return_value=(None, {"sdk_pin": "b" * 64})) as sdk:
+                qualify.check_release_image(image, "arm64", "1.5", "120")
+                requirement = qualify.bark_release.distribution_requirement(None, "ee.qdo.bark")
+                run_tool.assert_called_once_with(
+                    ["/usr/bin/codesign", "--verify", "--strict", "-R", requirement, image], check=True)
+                self.assertEqual(verify_image.call_args.args[3], requirement + ' and identifier "ee.qdo.bark"')
+                sdk.assert_called_once_with(load.return_value, "arm64", installed)
+                with self.assertRaisesRegex(ValueError, "Bark build"):
+                    qualify.check_release_image(image, "arm64", "1.5", "121")
+                sdk.side_effect = ValueError("The SDK receipt does not match the pinned recipe")
+                with self.assertRaisesRegex(ValueError, "SDK receipt does not match"):
+                    qualify.check_release_image(image, "arm64", "1.5", "120")
+
     def test_plausible_receipt_cannot_vouch_for_developer_payload(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

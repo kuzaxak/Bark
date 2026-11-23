@@ -199,24 +199,8 @@ def check_release_receipt(receipt, image, architecture, app=None, *, feed_url=No
     validate_samples(result.get("startup"))
     validate_machine(result.get("hardware"), result.get("macos"))
     checked_update_identities(result["installed_update"])
-    image_requirement = bark_release.distribution_requirement(app, "ee.qdo.bark")
-    app_requirement = (verify_release_signature(app) if app is not None else
-                       image_requirement + ' and identifier "ee.qdo.bark"')
-    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R", image_requirement, image], check=True)
-    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
 
-    def verify_copy(installed):
-        info = plistlib.loads((installed / "Contents/Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") != "ee.qdo.bark":
-            raise ValueError("The disk image must contain the ordinary Bark application.")
-        if (result.get("build"), result.get("version")) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
-            raise ValueError("The release receipt belongs to a different Bark build.")
-        if feed_url is not None:
-            expected = bark_release.production_settings(result["version"], result["build"],
-                                                        feed_url.rsplit("/", 1)[0], architecture)
-            if expected["SUFeedURL"] != feed_url or any(info.get(key) != value for key, value in expected.items()):
-                raise ValueError("The signed app has different production update settings.")
-        verify_shell_source(installed, expected=shell_source_digest(REPO))
+    def check_receipt_copy(installed, contributor):
         if bundle_cdhash(installed) != candidate["bundle_cdhash"]:
             raise ValueError("The disk image app does not match the app in the qualification receipt.")
         _, verified = verify_official_sdk(contributor, architecture, installed)
@@ -229,10 +213,37 @@ def check_release_receipt(receipt, image, architecture, app=None, *, feed_url=No
         ):
             raise ValueError("The release receipt's package sizes differ from the DMG or installed app.")
 
-    with TemporaryDirectory(prefix="bark-receipt-", dir="/private/tmp") as work:
-        bark_release.verify_installed_image(image, app, Path(work), app_requirement, verify_copy)
+    check_release_image(image, architecture, result.get("version"), result.get("build"), app,
+                        feed_url=feed_url, check_copy=check_receipt_copy)
     if result["image_sha256"] != file_digest(image):
         raise ValueError("The release DMG changed during verification.")
+
+
+def check_release_image(image, architecture, version, build, app=None, *, feed_url=None, check_copy=None):
+    image_requirement = bark_release.distribution_requirement(app, "ee.qdo.bark")
+    app_requirement = (verify_release_signature(app) if app is not None else
+                       image_requirement + ' and identifier "ee.qdo.bark"')
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R", image_requirement, image], check=True)
+    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
+
+    def verify_copy(installed):
+        info = plistlib.loads((installed / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != "ee.qdo.bark":
+            raise ValueError("The disk image must contain the ordinary Bark application.")
+        if (build, version) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
+            raise ValueError("The disk image holds a different Bark build.")
+        if feed_url is not None:
+            expected = bark_release.production_settings(version, build, feed_url.rsplit("/", 1)[0], architecture)
+            if expected["SUFeedURL"] != feed_url or any(info.get(key) != value for key, value in expected.items()):
+                raise ValueError("The signed app has different production update settings.")
+        verify_shell_source(installed, expected=shell_source_digest(REPO))
+        if check_copy is None:
+            verify_official_sdk(contributor, architecture, installed)
+        else:
+            check_copy(installed, contributor)
+
+    with TemporaryDirectory(prefix="bark-receipt-", dir="/private/tmp") as work:
+        bark_release.verify_installed_image(image, app, Path(work), app_requirement, verify_copy)
 
 
 def release_receipt_main(argv):
@@ -251,9 +262,27 @@ def release_receipt_main(argv):
     return 0
 
 
+def release_image_main(argv):
+    parser = argparse.ArgumentParser(description="Check a signed, notarized release DMG before publication.")
+    parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument("--arch", choices=("x86_64", "arm64"), required=True)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--build", required=True)
+    parser.add_argument("--feed-url", required=True, help="The installed app's signed update feed URL")
+    args = parser.parse_args(argv)
+    try:
+        check_release_image(args.image, args.arch, args.version, args.build, feed_url=args.feed_url)
+    except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    return 0
+
+
 def main():
     if sys.argv[1:2] == ["check-release-receipt"]:
         return release_receipt_main(sys.argv[2:])
+    if sys.argv[1:2] == ["check-release-image"]:
+        return release_image_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True, help="Signed app built with the checkout's official SDK")
     parser.add_argument("--image", type=Path, help="Assess and run the copy installed from this notarized release DMG")
