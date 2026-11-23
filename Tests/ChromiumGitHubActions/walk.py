@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify an anonymous visit to Bark's public Actions page on hosted macOS."""
+"""Qualify an anonymous visit to Bark's public Actions page from a GitHub Actions macOS job."""
 
 import json
 import os
@@ -7,16 +7,23 @@ from pathlib import Path
 import runpy
 import sys
 import time
+from urllib.parse import urlsplit
 
 TESTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TESTS / "Shared"))
 from signed_walk import Accessibility, run_walk, wait_for
 
 URL = "https://github.com/kuzaxak/Bark/actions"
-DOCUMENT_TITLE = "All Workflow Runs · GitHub"
 SEARCH_LABEL = "Search runs"
 SEARCH_TEXT = "Bark"
 OBSERVE_SECONDS = 10
+
+
+def actions_address(url):
+    if url is None:
+        return False
+    parts = urlsplit(str(url.absoluteString()))
+    return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}" == URL
 
 
 def prepare_fixture(root, _origin, _app, _profile):
@@ -29,14 +36,15 @@ def prepare_fixture(root, _origin, _app, _profile):
 
 def exercise(screen, process, _events, output):
     access = Accessibility(screen, process)
-    wait_for("The signed candidate did not open a window", screen.windows, process, timeout=30)
     screen.guard()
     access.ax.AXUIElementSetAttributeValue(access.application, "AXEnhancedUserInterface", True)
 
     def document():
         if access.find("This page crashed", ("AXStaticText",)):
             raise RuntimeError("The Actions tab reported a renderer termination")
-        return access.find(DOCUMENT_TITLE, ("AXWebArea",))
+        return next((node for window in access.windows() for node in access.tree(window)
+                     if access.attribute(node, "AXRole") == "AXWebArea"
+                     and actions_address(access.attribute(node, "AXURL"))), None)
 
     def search():
         area = document()
@@ -47,34 +55,34 @@ def exercise(screen, process, _events, output):
                      and (access.attribute(node, "AXPlaceholderValue") == SEARCH_LABEL
                           or SEARCH_LABEL in access.names(node))), None)
 
-    field = wait_for(
-        "Inconclusive: GitHub's public Actions page and search field did not become available "
-        "(check network, authentication redirects, and page changes)", search, process, timeout=45,
-    )
-    x, y = access.center(field)
-    bounds = screen.windows()[0]["kCGWindowBounds"]
-    screen.click((x - bounds["X"], y - bounds["Y"]))
-    screen.key(SEARCH_TEXT, unicode=True)
-
     def input_received():
-        if not document():
-            return False
-        focused = access.attribute(access.application, "AXFocusedUIElement")
-        return access.attribute(focused, "AXValue") == SEARCH_TEXT
+        return access.attribute(search(), "AXValue") == SEARCH_TEXT
 
-    wait_for("The Actions page mounted but did not respond to typing", input_received, process)
-    # Keep the page foregrounded long enough to catch a termination after the first paint.
-    until = time.monotonic() + OBSERVE_SECONDS
-    while time.monotonic() < until:
-        if process.poll() is not None:
-            raise RuntimeError(f"The candidate exited while showing Actions (status {process.returncode})")
-        screen.guard()
-        if not document():
-            raise RuntimeError("Inconclusive: the Actions document disappeared after responding")
-        time.sleep(0.5)
+    try:
+        field = wait_for(
+            "Inconclusive: GitHub's public Actions page and search field did not become available "
+            "(check network, authentication redirects, and page changes)", search, process, timeout=45,
+        )
+        x, y = access.center(field)
+        bounds = screen.windows()[0]["kCGWindowBounds"]
+        screen.click((x - bounds["X"], y - bounds["Y"]))
+        screen.key(SEARCH_TEXT, unicode=True)
+        wait_for("The Actions page mounted but did not respond to typing", input_received, process)
+        # Keep the page foregrounded long enough to catch a termination after the first paint.
+        until = time.monotonic() + OBSERVE_SECONDS
+        while time.monotonic() < until:
+            if process.poll() is not None:
+                raise RuntimeError(f"The candidate exited while showing Actions (status {process.returncode})")
+            screen.guard()
+            if not document():
+                raise RuntimeError("Inconclusive: the Actions document disappeared after responding")
+            time.sleep(0.5)
 
-    if not document():
-        raise RuntimeError("Inconclusive: the Actions document disappeared before capture")
+        if not document():
+            raise RuntimeError("Inconclusive: the Actions document disappeared before capture")
+    except RuntimeError:
+        access.dump(output / "accessibility.json")
+        raise
     screen.screenshot(output / "actions.png")
     screen.key("q", screen.command)
     screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process))
@@ -83,8 +91,8 @@ def exercise(screen, process, _events, output):
 
 def parse_options(parser):
     args = parser.parse_args()
-    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
-        parser.error("Run this walkthrough only on a GitHub-hosted macOS runner")
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        parser.error("Run this walkthrough only in a GitHub Actions job")
     if not args.require_official:
         parser.error("This walkthrough requires --require-official")
     return args
