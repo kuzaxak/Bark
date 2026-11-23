@@ -1,5 +1,7 @@
 """Regressions for tying native startup and Sparkle results to one signed candidate."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -286,6 +288,26 @@ class OfficialQualificationTests(unittest.TestCase):
                         return_value=subprocess.CompletedProcess(["walk"], code)):
                     with self.assertRaises(qualify.ScreenUnavailable if code == 3 else subprocess.CalledProcessError):
                         qualify.walk(Path("walk.py"), [], output / str(code))
+
+    def test_failed_walk_shows_the_end_of_its_log(self):
+        def walk_output(command, stdout, stderr):
+            stdout.write("".join(f"early line {index}\n" for index in range(200)))
+            stdout.write("RuntimeError: Missing pointer event on /source\n")
+            return subprocess.CompletedProcess(command, code)
+
+        with tempfile.TemporaryDirectory() as folder:
+            for code, failure in ((1, subprocess.CalledProcessError), (3, qualify.ScreenUnavailable)):
+                with self.subTest(code=code), patch.object(qualify.subprocess, "run", side_effect=walk_output), \
+                        contextlib.redirect_stderr(io.StringIO()) as shown:
+                    with self.assertRaises(failure):
+                        qualify.walk(Path("walk.py"), [], Path(folder) / str(code))
+                    self.assertIn("RuntimeError: Missing pointer event on /source", shown.getvalue())
+                    self.assertNotIn("early line 0\n", shown.getvalue())
+            code = 0
+            with patch.object(qualify.subprocess, "run", side_effect=walk_output), \
+                    contextlib.redirect_stderr(io.StringIO()) as shown:
+                qualify.walk(Path("walk.py"), [], Path(folder) / "passed")
+            self.assertEqual(shown.getvalue(), "")
 
     def test_guard_interruption_propagates_without_a_receipt(self):
         with tempfile.TemporaryDirectory() as folder:
