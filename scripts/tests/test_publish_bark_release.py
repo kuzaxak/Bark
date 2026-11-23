@@ -189,5 +189,29 @@ class PublicationTests(unittest.TestCase):
             verify.assert_called_once()
 
 
+class LocalAssetTests(unittest.TestCase):
+    def test_signed_images_publish_without_walk_records(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            build = "202611200002"
+            images = {arch: root / f"Bark-2.0.0-{build}-macos-{arch}.dmg" for arch in release.ARCHITECTURES}
+            feeds = [release.feed_name(arch) for arch in release.ARCHITECTURES]
+            for name in ("appcast.xml", release.TRANSITION_NAME, *feeds, *(image.name for image in images.values())):
+                (root / name).write_text(name)
+            with patch.object(release, "check_appcast"), patch.object(release, "check_transition"), \
+                    patch.object(release.subprocess, "run") as run:
+                assets, _ = release.prepare_assets(root, root / release.TRANSITION_NAME, release.TRANSITION_TAG,
+                                                   "2.0.0", build)
+            self.assertEqual(set(assets), {"appcast.xml", release.TRANSITION_NAME, *feeds,
+                                           *(image.name for image in images.values())})
+            calls = [[str(part) for part in call.args[0]] for call in run.call_args_list]
+            for arch, image in images.items():
+                self.assertIn([sys.executable, "-B", str(release.REPO / "Tests/ChromiumStartup/qualify.py"),
+                               "check-release-image", "--image", str(image), "--arch", arch,
+                               "--version", "2.0.0", "--build", build,
+                               "--feed-url", f"{release.FEED_BASE}/{release.feed_name(arch)}"], calls)
+                self.assertIn(["xcrun", "stapler", "validate", str(image)], calls)
+
+
 if __name__ == "__main__":
     unittest.main()

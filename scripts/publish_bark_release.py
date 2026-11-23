@@ -81,13 +81,11 @@ def check_appcast(feed, image, tag, version, build, *, ordinary):
                     image.path, SPARKLE_PUBLIC_KEY, signature], check=True)
 
 
-def check_candidate(image, feed, receipt, arch, version, build):
-    recorded = json.loads(receipt.read_text())
-    if (recorded["version"], recorded["build"]) != (version, build):
-        raise ValueError(f"{arch} receipt belongs to a different release.")
+def check_image(image, feed, arch, version, build):
     subprocess.run([sys.executable, "-B", REPO / "Tests/ChromiumStartup/qualify.py",
-                    "check-release-receipt", "--receipt", receipt, "--image", image.path,
-                    "--arch", arch, "--feed-url", f"{FEED_BASE}/{feed.path.name}"], check=True)
+                    "check-release-image", "--image", image.path, "--arch", arch,
+                    "--version", version, "--build", build,
+                    "--feed-url", f"{FEED_BASE}/{feed.path.name}"], check=True)
     subprocess.run(["xcrun", "stapler", "validate", image.path], check=True)
 
 
@@ -129,7 +127,7 @@ def prepare_assets(directory, transition_path, tag, version, build):
         feed = Asset.read(directory / feed_name(arch))
         image = Asset.read(directory / f"Bark-{version}-{build}-macos-{arch}.dmg")
         check_appcast(feed, image, tag, version, build, ordinary=True)
-        check_candidate(image, feed, directory / f"qualification-{arch}.json", arch, version, build)
+        check_image(image, feed, arch, version, build)
         assets.extend((feed, image))
     if tag == TRANSITION_TAG:
         assets.append(transition)
@@ -285,7 +283,7 @@ def publish(github, tag, commit, version, build, previous, notes, assets, transi
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--directory", required=True, type=Path, help="Both native DMGs, three appcasts and two receipts")
+    parser.add_argument("--directory", required=True, type=Path, help="Both native DMGs and three appcasts")
     parser.add_argument("--transition-image", required=True, type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build", required=True)

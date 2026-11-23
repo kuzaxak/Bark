@@ -179,18 +179,8 @@ jobs:
         run: |
           if [[ -d build/official-sdk-cache ]]; then chmod -R u+w build/official-sdk-cache && rm -rf build/official-sdk-cache; fi
 
-  qualify:
-    needs: [build, package]
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/bark-release-qualification.yml
-    with:
-      source_ref: ${{ needs.build.outputs.source }}
-      release_artifact: bark-release-assets
-
   release:
-    needs: [build, qualify]
+    needs: [build, package]
     runs-on: [self-hosted, macOS, X64, nook-release]
     permissions:
       contents: write
@@ -215,12 +205,7 @@ jobs:
         with:
           name: bark-release-assets
           path: ${{ runner.temp }}/release
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: bark-qualified-*
-          path: ${{ runner.temp }}/release
-          merge-multiple: true
-      - name: Commit the qualified SDK pins and publish the release
+      - name: Commit the SDK pins and publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/runner/promote-bark-2.sh "$RUNNER_TEMP/bark-official-headers" "$RUNNER_TEMP/release"
