@@ -29,7 +29,6 @@ def prepare_fixture(root, _origin, _app, _profile):
 
 def exercise(screen, process, _events, output):
     access = Accessibility(screen, process)
-    wait_for("The signed candidate did not open a window", screen.windows, process, timeout=30)
     screen.guard()
     access.ax.AXUIElementSetAttributeValue(access.application, "AXEnhancedUserInterface", True)
 

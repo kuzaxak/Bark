@@ -85,6 +85,11 @@ class Screen:
         return wait_for("The candidate window stayed transparent", lambda: next(
             (window for window in self.windows() if target(window) and window["kCGWindowAlpha"] > 0), None))
 
+    def wait_until_shown(self, process):
+        wait_for("The candidate did not show a window", lambda: next(
+            (window for window in self.windows() if window["kCGWindowAlpha"] > 0), None), process, timeout=30)
+        wait_for("The candidate did not become frontmost", lambda: self.frontmost()["pid"] == self.pid, process)
+
     def click(self, relative, flags=0):
         self.guard()
         q = self.quartz
@@ -471,6 +476,7 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
                             try:
                                 screen = Screen(console, owns_screen, proc.pid, pointer, launch_started_ns)
                                 try:
+                                    screen.wait_until_shown(proc)
                                     phase(screen, proc, server.events, output)
                                 except RuntimeError as failure:
                                     screen.record_failure(output, failure)

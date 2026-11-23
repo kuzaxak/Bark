@@ -280,6 +280,111 @@ class TransparentHoverTests(unittest.TestCase):
         self.assertEqual(self.posted, [])
 
 
+class FirstWindowTests(unittest.TestCase):
+    pid, finder = 4321, 341
+
+    def launch(self, *, shown_at=1.0, drawn_at=1.0, front_at=1.0, exits_at=math.inf):
+        desktop = {"now": 0.0}
+        self.seen = []
+
+        def front():
+            return self.pid if desktop["now"] >= front_at else self.finder
+
+        def window_list(*_):
+            if desktop["now"] < shown_at:
+                return []
+            return [{"kCGWindowOwnerName": "Bark", "kCGWindowOwnerPID": self.pid, "kCGWindowLayer": 0,
+                     "kCGWindowNumber": 40, "kCGWindowAlpha": 1.0 if desktop["now"] >= drawn_at else 0.0,
+                     "kCGWindowBounds": {"X": 50, "Y": 40, "Width": 900, "Height": 660}}]
+
+        def lsappinfo(command, text):
+            if command[1] == "front":
+                return "ASN:0x0-0x1:\n"
+            name = "Bark" if front() == self.pid else "Finder"
+            return f'"pid"={front()}\n' + (f'"LSDisplayName"="{name}"\n' if "name" in command else "")
+
+        quartz = Mock(kCGDockWindowLevel=20, kCGCursorWindowLevel=2147483630)
+        quartz.CGWindowListCopyWindowInfo.side_effect = window_list
+        quartz.CGEventGetLocation.return_value = SimpleNamespace(x=5.0, y=5.0)
+        quartz.CGGetDisplaysWithPoint.return_value = (0, (7,), 1)
+        quartz.CGDisplayBounds.return_value = SimpleNamespace(
+            origin=SimpleNamespace(x=0, y=0), size=SimpleNamespace(width=1024, height=768))
+        quartz.CGDisplayModeGetPixelWidth.return_value = 1024
+        quartz.CGImageDestinationFinalize.return_value = True
+        ax = Mock(AXIsProcessTrusted=lambda: True)
+        ax.AXUIElementCopyAttributeValue.return_value = (-25212, None)
+        ax.AXUIElementCopyElementAtPosition.return_value = (-25212, None)
+        console = Mock(pointer=lambda: (5.0, 5.0), available=lambda: True, idle=lambda: 60)
+        contributor = {"native_architecture": lambda: "arm64", "verify_signed_shell": Mock(),
+                       "app_output_lock": lambda app: nullcontext(), "seed_profile": Mock(), "stop": Mock()}
+        process = Mock(pid=self.pid, returncode=1)
+        process.poll.side_effect = lambda: 1 if desktop["now"] >= exits_at else None
+        process.wait.return_value = 0
+
+        @contextmanager
+        def serve():
+            yield SimpleNamespace(server_port=8000, events=[])
+
+        def exercise(screen, _process, _events, _output):
+            screen.guard()
+            self.seen.append({"now": desktop["now"], "front": front(),
+                              "alphas": [row["kCGWindowAlpha"] for row in screen.windows()]})
+
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder) / "Bark.app"
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/MacOS/Bark").touch()
+            output = Path(folder) / "evidence"
+            with patch.object(sys, "argv", ["walk", "--app", str(app), "--output", str(output)]), \
+                    patch.object(sys, "platform", "darwin"), patch.dict(sys.modules, {
+                        "ApplicationServices": ax, "Quartz": quartz, "Foundation": Mock()}), \
+                    patch.object(signed_walk, "processes", return_value=[]), \
+                    patch.object(signed_walk, "crash_reports", return_value=set()), \
+                    patch.object(signed_walk.runpy, "run_path", return_value=contributor), \
+                    patch.object(signed_walk, "bundle_cdhash", return_value="cdhash"), \
+                    patch.object(signed_walk, "launch_verified", return_value=(process, 0)), \
+                    patch("bark_macos_console.QuartzConsole", return_value=console), \
+                    patch("bark_macos_console.screen_lock", lambda path, wait: nullcontext(lambda: True)), \
+                    patch("bark_macos_console.require_idle_console"), \
+                    patch("subprocess.check_output", side_effect=lsappinfo), patch("subprocess.run"), \
+                    patch("time.monotonic", lambda: desktop["now"]), \
+                    patch("time.sleep", side_effect=lambda seconds: desktop.update(now=desktop["now"] + seconds)), \
+                    redirect_stdout(io.StringIO()):
+                try:
+                    return signed_walk.run_walk("fixture", "fixture", serve, exercise), None
+                except RuntimeError as failure:
+                    evidence = json.loads((output / "click-diagnostics.json").read_text())
+                    return failure, evidence
+
+    def test_walk_begins_once_its_first_window_is_drawn_and_frontmost(self):
+        status, _ = self.launch(shown_at=2.0, drawn_at=3.0, front_at=4.0)
+        self.assertEqual(status, 0)
+        self.assertEqual(len(self.seen), 1)
+        self.assertGreaterEqual(self.seen[0]["now"], 4.0)
+        self.assertEqual(self.seen[0]["front"], self.pid)
+        self.assertEqual(self.seen[0]["alphas"], [1.0])
+
+    def test_candidate_without_a_drawn_window_fails_before_the_walk(self):
+        for case, timeline, expected in [
+            ("never shown", {"shown_at": math.inf}, "The candidate did not show a window"),
+            ("stays transparent", {"drawn_at": math.inf}, "The candidate did not show a window"),
+            ("exits first", {"shown_at": math.inf, "exits_at": 2.0},
+             "The candidate did not show a window (candidate exit status 1)"),
+        ]:
+            with self.subTest(case):
+                failure, evidence = self.launch(**timeline)
+                self.assertEqual(str(failure), expected)
+                self.assertEqual(self.seen, [])
+                self.assertEqual(evidence["failure"], expected)
+
+    def test_candidate_that_never_becomes_frontmost_fails_before_the_walk(self):
+        failure, evidence = self.launch(front_at=math.inf)
+        self.assertEqual(str(failure), "The candidate did not become frontmost")
+        self.assertEqual(self.seen, [])
+        self.assertEqual(evidence["at_failure"]["frontmost"], {"pid": self.finder, "name": "Finder"})
+        self.assertEqual([row["number"] for row in evidence["at_failure"]["candidate_windows"]], [40])
+
+
 class LoopbackFixtureTests(unittest.TestCase):
     def test_startup_fixture_binds_loopback_without_name_lookups(self):
         serve = runpy.run_path(str(REPO / "Tests/ChromiumStartup/walk.py"))["serve"]
