@@ -4242,6 +4242,14 @@ struct NativePageLifecycleTests {
 @Suite(.serialized)
 struct NativeVaultFormTests {
     private func agentCallbacks() async { for _ in 0..<40 { await Task.yield() } }
+    private enum VaultSaveEvent: Sendable { case presented, retired }
+    private func saveEvents(_ presenter: SyntheticVaultPresenter,
+                            _ page: NativeTestPage) -> AsyncStream<VaultSaveEvent>.Iterator {
+        let events = AsyncStream<VaultSaveEvent>.makeStream()
+        presenter.onSaveOffered = { events.continuation.yield(.presented) }
+        page.onVaultSaveCancelled = { events.continuation.yield(.retired) }
+        return events.stream.makeAsyncIterator()
+    }
     @Test func vaultLockDuringLookupUpdatesStatusImmediately() async throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -4675,14 +4683,16 @@ struct NativeVaultFormTests {
         #expect(!methods.contains("logins") && !methods.contains("password"))
     }
 
-    @Test func validatedSaveSurvivesRedirectAndRequiresConsent() async throws {
+    @Test(.timeLimit(.minutes(1))) func validatedSaveSurvivesRedirectAndRequiresConsent() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.submitVault(); await agentCallbacks()
+        var events = saveEvents(presenter, native)
+        native.submitVault()
+        try #require(await events.next() == .presented)
         #expect(presenter.saveCompletion != nil)
         NotificationCenter.default.post(name:Notification.Name("NookVaultNativeStateChanged"),object:vault)
         await agentCallbacks()
@@ -4696,7 +4706,7 @@ struct NativeVaultFormTests {
         native.onEvent?(.committed(URL(string:"https://redirect.synthetic.invalid/done")))
         await agentCallbacks()
         let answer = presenter.saveCompletion; presenter.saveCompletion = nil; answer?(true)
-        await agentCallbacks()
+        try #require(await events.next() == .retired)
         let saves = await transport.saves
         #expect(saves.count == 1)
         #expect(saves.first?.0 == "https://vault.synthetic.invalid")
@@ -4721,7 +4731,7 @@ struct NativeVaultFormTests {
         #expect(enabled.isEnabled && enabled.openPawlVault() && launches == 2)
     }
 
-    @Test(arguments: ["open", "decline", "stale", "private", "ephemeral", "unavailable"])
+    @Test(.timeLimit(.minutes(1)), arguments: ["open", "decline", "stale", "private", "ephemeral", "unavailable"])
     func legacyVaultOnlyOffersManualManagement(action: String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -4743,12 +4753,15 @@ struct NativeVaultFormTests {
             native = f.host.finishCreate(0)
         }
         if action == "ephemeral" { f.tabs.selectedSession(in: f.window)?.profile?.isEphemeral = true }
+        var events = saveEvents(presenter, native)
         native.submitVault(username: "synthetic-user")
-        await agentCallbacks()
+        let outcome = await events.next()
         if action == "private" || action == "ephemeral" {
+            try #require(outcome == .retired)
             #expect(presenter.loginAction == nil && presenter.saveCompletion == nil)
             #expect(!(await transport.methods).contains("logins"))
         } else {
+            try #require(outcome == .presented)
             #expect(presenter.loginAction == .manageExisting && launches == 0)
             let answer = try #require(presenter.saveCompletion)
             if action == "stale" {
@@ -4769,7 +4782,7 @@ struct NativeVaultFormTests {
         }
     }
 
-    @Test(arguments: [true, false])
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
     func oldVaultCannotOverwriteAnAccountCreatedAfterLookup(exclusiveSDK: Bool) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -4783,7 +4796,9 @@ struct NativeVaultFormTests {
                                  openPawlApplication: { launches += 1; return true })
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.submitVault(); await agentCallbacks()
+        var events = saveEvents(presenter, native)
+        native.submitVault()
+        try #require(await events.next() == .presented)
         #expect(presenter.loginAction == .manageNew)
         let answer = try #require(presenter.saveCompletion)
         let external = try await transport.send(VaultSave(origin: origin, username: "new-synthetic-user",
@@ -4839,7 +4854,7 @@ struct NativeVaultFormTests {
         }
     }
 
-    @Test(arguments:["decline", "replacement", "owner", "profile", "disable", "disconnect", "window"])
+    @Test(.timeLimit(.minutes(1)), arguments:["decline", "replacement", "owner", "profile", "disable", "disconnect", "window"])
     func endedSaveCannotWriteOrDismissNewerOffer(change:String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -4847,11 +4862,13 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.submitVault(); await agentCallbacks()
+        var events = saveEvents(presenter, native)
+        native.submitVault()
+        try #require(await events.next() == .presented)
         let old = try #require(presenter.saveCompletion)
         switch change {
         case "decline": presenter.saveCompletion = nil; old(false)
-        case "replacement": native.submitVault(); await agentCallbacks()
+        case "replacement": native.submitVault(); try #require(await events.next() == .presented)
         case "owner": native.vaultSaveValid = false; native.vaultSave?(nil)
         case "profile": native.vaultProfileOverride = UUID()
         case "disable": f.tabs.settings.pawlVaultEnabled = false
@@ -4868,23 +4885,27 @@ struct NativeVaultFormTests {
         #expect(await transport.saves.isEmpty)
         if change == "replacement" {
             #expect(presenter.saveCompletion != nil)
-            presenter.saveCompletion?(true); await agentCallbacks()
+            presenter.saveCompletion?(true)
+            try #require(await events.next() == .retired)
             #expect(await transport.saves.count == 1)
         }
     }
 
-    @Test func dispatchedSaveReplyCannotDismissReplacementSubmission() async throws {
+    @Test(.timeLimit(.minutes(1))) func dispatchedSaveReplyCannotDismissReplacementSubmission() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.submitVault(); await agentCallbacks()
+        var events = saveEvents(presenter, native)
+        native.submitVault()
+        try #require(await events.next() == .presented)
         await transport.holdNextSave()
         presenter.saveCompletion?(true)
         for await _ in transport.saveStarted.stream { break }
-        native.submitVault(); await agentCallbacks()
+        native.submitVault()
+        try #require(await events.next() == .presented)
         let replacement = try #require(presenter.saveCompletion)
         await transport.releaseSave(); await agentCallbacks()
         #expect(presenter.saveCompletion != nil && native.vaultSaveValid)
