@@ -181,6 +181,9 @@ jobs:
 
   qualify:
     needs: [build, package]
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/bark-release-qualification.yml
     with:
       source_ref: ${{ needs.build.outputs.source }}

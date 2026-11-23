@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify an anonymous visit to Bark's public Actions page on hosted macOS."""
+"""Qualify an anonymous visit to Bark's public Actions page from a GitHub Actions macOS job."""
 
 import json
 import os
@@ -83,8 +83,8 @@ def exercise(screen, process, _events, output):
 
 def parse_options(parser):
     args = parser.parse_args()
-    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
-        parser.error("Run this walkthrough only on a GitHub-hosted macOS runner")
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        parser.error("Run this walkthrough only in a GitHub Actions job")
     if not args.require_official:
         parser.error("This walkthrough requires --require-official")
     return args

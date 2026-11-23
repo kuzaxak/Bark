@@ -456,9 +456,20 @@ steps fail or it runs out of work. Any failure blocks SDK packaging. Fix the
 reported errors and push a new candidate tag. The previous tag remains a record of the attempted build.
 
 The signing job packages two Bark DMGs and the universal Nook transition with
-the established Developer ID, notary and Sparkle credentials. Native hosted Mac
-jobs exercise the signed updates. A failed qualification prints the end of the
-failing walk's log and keeps that architecture's walk evidence for 14 days as
+the established Developer ID, notary and Sparkle credentials. GitHub's hosted
+macOS runner qualifies the Apple Silicon build. The Intel walks run on the
+`nook-release` Mac's desktop, because the hosted Intel runner has no Metal GPU
+and Chromium keeps a new window transparent until its first compositor frame.
+The Intel Sparkle rehearsal stays on the hosted Intel runner: Sparkle keeps
+update state in the preferences, caches and launchd jobs of the installed app's
+bundle ID, and the release Mac has Nook installed. Keep the release Mac logged
+in, unlocked and idle from the end of the signing job until qualification
+finishes, and pause anything that moves the pointer. A walk stops when the Mac
+is locked, in use or showing another walk, and the job fails with **Intel
+release Mac unavailable**. This is not a product failure: rerun the failed job
+once the Mac is idle. The walks use the runner's `BARK_WALK_PYTHON`, which needs
+Accessibility, event-posting and Screen Recording access. A failed qualification
+prints the end of the failing walk's log and keeps that architecture's walk evidence for 14 days as
 `bark-qualification-evidence-<arch>-<attempt>`. When a walk step fails, the walk
 adds `click-diagnostics.json` to its evidence and prints a summary in its log: the
 last click's window and screen points, the display scale, the frontmost app and
@@ -466,11 +477,21 @@ its key window before the click and at the failure, the candidate's windows and
 the on-screen windows at that point with owner, layer, bounds and title, and the
 accessibility element there.
 While the walk still holds the screen lock, it also saves `display.png`, a capture
-of the whole display with every visible window, notification and the menu bar. On
-a self-hosted desktop that capture shows whatever else is on screen. After qualification, the release job commits
+of the whole display with every visible window, notification and the menu bar. The
+Intel job leaves `display.png` out of its evidence, because on the release Mac it
+shows whatever else is on screen. After qualification, the release job commits
 the exact paired SDK pins, creates `bark-v2.0.0`, uploads a GitHub draft and
 promotes it to Latest after checking its asset digests. Latest must serve
 `appcast.xml`, `bark-macos-arm64.xml` and `bark-macos-x86_64.xml`.
+
+To repeat only qualification after a change to `Tests/` or the workflows, run
+`gh workflow run bark-release-qualification.yml --ref release/2.0 -f run=<run ID> -f arch=both`
+with a **Build Bark release** run whose package job succeeded. It qualifies that
+run's `bark-release-assets` and `bark-release-qualification-<arch>` artifacts
+with the dispatched ref's tests, stops if the ref changes the app sources or
+Chromium recipe, and uploads `bark-qualification-rehearsal-<arch>`, which no
+release reads. The release Mac's guard admits only **Build Bark release** from
+`main`, so use `-f arch=arm64` until the guard also admits this workflow.
 
 ### Prepare a Bark distribution candidate
 

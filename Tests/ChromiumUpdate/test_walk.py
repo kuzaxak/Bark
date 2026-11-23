@@ -405,5 +405,46 @@ class LoopbackServerTests(unittest.TestCase):
             self.assertEqual(server.origin, f"http://127.0.0.1:{server.server_port}")
 
 
+class BusyDesktopTests(unittest.TestCase):
+    class Console:
+        def __init__(self, available=True, idle=60):
+            self.state = available, idle
+
+        def available(self):
+            return self.state[0]
+
+        def idle(self):
+            return self.state[1]
+
+    def wait(self, console, owns=lambda: True, predicate=lambda: None, process=None):
+        return walk.desktop_wait("The update prompt was not actionable", predicate, console, owns,
+                                 process=process, timeout=0.2)
+
+    def test_locked_console_is_a_busy_desktop(self):
+        with self.assertRaisesRegex(walk.ScreenUnavailable, "The update prompt was not actionable"):
+            self.wait(self.Console(available=False))
+
+    def test_recent_input_is_a_busy_desktop(self):
+        with self.assertRaises(walk.ScreenUnavailable):
+            self.wait(self.Console(idle=2))
+
+    def test_lost_screen_lock_is_a_busy_desktop(self):
+        with self.assertRaises(walk.ScreenUnavailable):
+            self.wait(self.Console(), owns=lambda: False)
+
+    def test_missing_control_on_an_idle_desktop_fails_the_walk(self):
+        with self.assertRaisesRegex(RuntimeError, "The update prompt was not actionable"):
+            self.wait(self.Console())
+
+    def test_exited_app_fails_the_walk_on_a_busy_desktop(self):
+        process = subprocess.Popen(["/usr/bin/false"])
+        process.wait()
+        with self.assertRaisesRegex(RuntimeError, "exit status 1"):
+            self.wait(self.Console(available=False), process=process)
+
+    def test_ready_control_is_returned(self):
+        self.assertEqual(self.wait(self.Console(available=False), predicate=lambda: "control"), "control")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,13 +11,26 @@ on:
         description: Artifact from this run containing the release DMGs and appcasts
         type: string
         required: true
+  workflow_dispatch:
+    inputs:
+      run:
+        description: Run ID of an earlier Build Bark release whose package job succeeded
+        type: string
+        required: true
+      arch:
+        description: Architectures to qualify again
+        type: choice
+        options: [both, arm64, x86_64]
+        default: both
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   qualify:
     name: Qualify ${{ matrix.arch }}
+    if: inputs.arch != 'x86_64'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -26,8 +39,6 @@ jobs:
         include:
           - arch: arm64
             runner: macos-26
-          - arch: x86_64
-            runner: macos-26-intel
     env:
       BARK_QUALIFICATION_ARCH: ${{ matrix.arch }}
     steps:
@@ -40,12 +51,16 @@ jobs:
           python-version: '3.13'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ inputs.release_artifact }}
+          name: ${{ inputs.release_artifact || 'bark-release-assets' }}
           path: ${{ runner.temp }}/bark-release
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+          github-token: ${{ inputs.run && github.token || '' }}
+          run-id: ${{ inputs.run || github.run_id }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: bark-release-qualification-${{ matrix.arch }}
           path: ${{ runner.temp }}/bark-qualification
+          github-token: ${{ inputs.run && github.token || '' }}
+          run-id: ${{ inputs.run || github.run_id }}
       - name: Install the official native SDK and walk dependencies
         shell: bash
         run: |
@@ -83,6 +98,17 @@ jobs:
             "$work/sparkle.app/Contents/MacOS/sparkle" "$work" "$receipts"
           rm -r "$work/Renamed Nook.app" "$work/sparkle.app"
           rm "$work/Sparkle-2.8.1.tar.xz" "$work/Nook-1.5.4-universal.dmg"
+      - name: Check that this ref has the app sources of the earlier run
+        if: inputs.run
+        shell: bash
+        env:
+          EARLIER_RUN: ${{ inputs.run }}
+        run: |
+          if ! python -B -c 'import sys; sys.path.insert(0, "scripts"); from pathlib import Path; from bark_shell_source import shell_source_digest, verify_shell_source; verify_shell_source(Path(sys.argv[1]), expected=shell_source_digest("."))' \
+              "$RUNNER_TEMP/bark-migration/Bark.app"; then
+            echo "::error title=Different app sources::$GITHUB_REF_NAME does not have the Bark app sources that run $EARLIER_RUN signed. Rerun qualification alone only for changes to Tests, workflows and scripts outside the app's shell source; build a new candidate otherwise."
+            exit 1
+          fi
       - name: Qualify the notarized Bark candidate and verify its native receipt
         shell: bash
         run: |
@@ -105,7 +131,7 @@ jobs:
           cp "$RUNNER_TEMP/bark-github-actions/actions.png" "$RUNNER_TEMP/bark-qualified/actions-$BARK_QUALIFICATION_ARCH.png"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: bark-qualified-${{ matrix.arch }}
+          name: ${{ inputs.run && 'bark-qualification-rehearsal' || 'bark-qualified' }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/bark-qualified
           if-no-files-found: error
           overwrite: true
@@ -120,3 +146,190 @@ jobs:
             !${{ runner.temp }}/bark-walk/install-check-*
           if-no-files-found: ignore
           retention-days: 14
+
+  # Sparkle keeps an update's state in the preferences, caches and launchd jobs of the updated app's
+  # bundle ID, here ee.qdo.nook, which the Nook installed on the release Mac also uses.
+  migrate-x86_64:
+    name: Rehearse Sparkle installs on x86_64
+    if: inputs.arch != 'arm64'
+    runs-on: macos-26-intel
+    timeout-minutes: 30
+    env:
+      BARK_QUALIFICATION_ARCH: x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.release_artifact || 'bark-release-assets' }}
+          path: ${{ runner.temp }}/bark-release
+          github-token: ${{ inputs.run && github.token || '' }}
+          run-id: ${{ inputs.run || github.run_id }}
+      - name: Rehearse both Sparkle installs with the signed release images
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/bark-migration"
+          receipts="$RUNNER_TEMP/bark-qualified"
+          mkdir "$work" "$receipts"
+          curl --fail --location --retry 3 --output "$work/Nook-1.5.4-universal.dmg" \
+            https://github.com/kuzaxak/Bark/releases/download/v1.5.4/Nook-1.5.4-universal.dmg
+          curl --fail --location --retry 3 --output "$work/Sparkle-2.8.1.tar.xz" \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.8.1/Sparkle-2.8.1.tar.xz
+          (
+            cd "$work"
+            echo '5cddb7695674ef7704268f38eccaee80e3accbf19e61c1689efff5b6116d85be  Sparkle-2.8.1.tar.xz' | shasum -a 256 -c
+            tar -xf Sparkle-2.8.1.tar.xz ./sparkle.app
+          )
+          python -B scripts/runner/rehearse-nook-migration.py "$BARK_QUALIFICATION_ARCH" \
+            "$RUNNER_TEMP/bark-release" "$work/Nook-1.5.4-universal.dmg" \
+            "$work/sparkle.app/Contents/MacOS/sparkle" "$work" "$receipts"
+          rm -r "$work/Renamed Nook.app" "$work/sparkle.app"
+          rm "$work/Sparkle-2.8.1.tar.xz" "$work/Nook-1.5.4-universal.dmg"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bark-migration-x86_64
+          path: ${{ runner.temp }}/bark-qualified/migration-x86_64.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  # Hosted Intel VMs have no Metal GPU, and Chromium keeps a new window transparent until its first compositor frame.
+  qualify-x86_64:
+    name: Qualify x86_64
+    needs: migrate-x86_64
+    if: github.repository == 'kuzaxak/Bark'
+    runs-on: [self-hosted, macOS, X64, nook-release]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      BARK_QUALIFICATION_ARCH: x86_64
+      DESKTOP_UNAVAILABLE: >-
+        ::error title=Intel release Mac unavailable::The Mac was locked, in use or showing another walk,
+        so qualification stopped before judging Bark. This is not a product failure. Leave the Mac logged in,
+        unlocked and idle, then rerun the failed job.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Locate the runner's walk Python
+        env:
+          CONFIGURED_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
+        run: |
+          python="${CONFIGURED_WALK_PYTHON:-$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python}"
+          test -x "$python"
+          echo "BARK_WALK_PYTHON=$python" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.release_artifact || 'bark-release-assets' }}
+          path: ${{ runner.temp }}/bark-release
+          github-token: ${{ inputs.run && github.token || '' }}
+          run-id: ${{ inputs.run || github.run_id }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bark-release-qualification-x86_64
+          path: ${{ runner.temp }}/bark-qualification
+          github-token: ${{ inputs.run && github.token || '' }}
+          run-id: ${{ inputs.run || github.run_id }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bark-migration-x86_64
+          path: ${{ runner.temp }}/bark-qualified
+      - name: Install the official native SDK
+        run: |
+          test "$(uname -m)" = "$BARK_QUALIFICATION_ARCH"
+          incoming="$RUNNER_TEMP/bark-qualification"
+          headers=Packages/BarkEngine/BarkEngine.xcframework/macos-arm64_x86_64/Headers/BarcChromium
+          for header in barc_bridge_api.h barc_engine_version_arm64.h barc_engine_version_x86_64.h \
+                        barc_public_headers_sha256.h engine-artifact-arm64.sha256 \
+                        engine-artifact-x86_64.sha256 engine-artifact-arm64.official.json \
+                        engine-artifact-x86_64.official.json module.modulemap; do
+            cp "$incoming/headers/$header" "$headers/$header"
+          done
+          "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --require-official --arch "$BARK_QUALIFICATION_ARCH" \
+            --engine "$incoming/BarkSDK.tar.gz" --install
+          rm "$incoming/BarkSDK.tar.gz"
+      - name: Copy the signed candidate from its release image
+        run: |
+          mount="$RUNNER_TEMP/bark-image"
+          mkdir "$mount" "$RUNNER_TEMP/bark-candidate"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" \
+            "$RUNNER_TEMP/bark-release/Bark-2.0.0-202611200002-macos-$BARK_QUALIFICATION_ARCH.dmg"
+          status=0
+          ditto "$mount/Bark.app" "$RUNNER_TEMP/bark-candidate/Bark.app" || status=$?
+          hdiutil detach "$mount"
+          exit "$status"
+      - name: Check that this ref has the app sources of the earlier run
+        if: inputs.run
+        env:
+          EARLIER_RUN: ${{ inputs.run }}
+        run: |
+          if ! "$BARK_WALK_PYTHON" -B -c 'import sys; sys.path.insert(0, "scripts"); from pathlib import Path; from bark_shell_source import shell_source_digest, verify_shell_source; verify_shell_source(Path(sys.argv[1]), expected=shell_source_digest("."))' \
+              "$RUNNER_TEMP/bark-candidate/Bark.app"; then
+            echo "::error title=Different app sources::$GITHUB_REF_NAME does not have the Bark app sources that run $EARLIER_RUN signed. Rerun qualification alone only for changes to Tests, workflows and scripts outside the app's shell source; build a new candidate otherwise."
+            exit 1
+          fi
+      - name: Qualify the notarized Bark candidate and verify its native receipt
+        run: |
+          image="$RUNNER_TEMP/bark-release/Bark-2.0.0-202611200002-macos-$BARK_QUALIFICATION_ARCH.dmg"
+          app="$RUNNER_TEMP/bark-candidate/Bark.app"
+          output="$RUNNER_TEMP/bark-walk"
+          status=0
+          "$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py --app "$app" --image "$image" \
+            --update-kit "$RUNNER_TEMP/bark-qualification/kit" --output "$output" || status=$?
+          if [[ "$status" == 3 ]]; then echo "$DESKTOP_UNAVAILABLE"; fi
+          if [[ "$status" != 0 ]]; then exit "$status"; fi
+          "$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py check-release-receipt --app "$app" --image "$image" \
+            --receipt "$output/qualification.json" --arch "$BARK_QUALIFICATION_ARCH" \
+            --feed-url "https://github.com/kuzaxak/Bark/releases/latest/download/bark-macos-$BARK_QUALIFICATION_ARCH.xml"
+          cp "$output/qualification.json" "$RUNNER_TEMP/bark-qualified/qualification-$BARK_QUALIFICATION_ARCH.json"
+      - name: Check the public GitHub Actions page on the signed candidate
+        run: |
+          # The previous walk's own input reset macOS's idle timer, and each walk needs 10 idle seconds.
+          sleep 11
+          status=0
+          "$BARK_WALK_PYTHON" -B Tests/ChromiumGitHubActions/walk.py --require-official \
+            --app "$RUNNER_TEMP/bark-candidate/Bark.app" --output "$RUNNER_TEMP/bark-github-actions" || status=$?
+          if [[ "$status" == 3 ]]; then echo "$DESKTOP_UNAVAILABLE"; fi
+          if [[ "$status" != 0 ]]; then exit "$status"; fi
+          cp "$RUNNER_TEMP/bark-github-actions/actions.png" "$RUNNER_TEMP/bark-qualified/actions-$BARK_QUALIFICATION_ARCH.png"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.run && 'bark-qualification-rehearsal' || 'bark-qualified' }}-x86_64
+          path: ${{ runner.temp }}/bark-qualified
+          if-no-files-found: error
+          overwrite: true
+      - name: Upload the walk evidence of a failed qualification
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bark-qualification-evidence-x86_64-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/bark-walk
+            ${{ runner.temp }}/bark-github-actions
+            !${{ runner.temp }}/bark-walk/install-check-*
+            !${{ runner.temp }}/**/display.png
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove this job's apps and images from the release Mac
+        if: always()
+        run: |
+          ps -axo pid=,comm= | while read -r pid command; do
+            if [[ "$command" == "$RUNNER_TEMP"/* ]]; then kill -KILL "$pid" || true; fi
+          done
+          hdiutil info | awk -v temp="$RUNNER_TEMP/" '
+            /^image-path/ { sub(/^image-path *: /, ""); mine = index($0, temp) == 1 }
+            mine && /^\/dev\/disk[0-9]+[ \t]/ { print $1; mine = 0 }' |
+            while read -r disk; do hdiutil detach -force "$disk" || true; done
+          lsregister=/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister
+          find "$RUNNER_TEMP"/bark-* -name '*.app' -type d -prune -exec "$lsregister" -u {} ';' 2>/dev/null || true
+          chmod -R u+w "$RUNNER_TEMP"/bark-* 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP"/bark-*

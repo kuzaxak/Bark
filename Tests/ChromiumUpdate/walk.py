@@ -333,6 +333,16 @@ def preparation_handoff_seen(status, extraction_seen):
             or (extraction_seen and not status["installer_visible"]))
 
 
+def desktop_wait(description, predicate, console, owns, *, process=None, timeout):
+    try:
+        return wait_for(description, predicate, process, timeout=timeout)
+    except RuntimeError:
+        if (process is None or process.poll() is None) and not (
+                owns() and console.available() and console.idle() >= 10):
+            raise ScreenUnavailable(f"{description}: the Mac was locked or in use") from None
+        raise
+
+
 def exercise(check, installed, newer, root, versions, arch, server, output, *, engine, replacement_cdhash):
     import ApplicationServices as ax
     import Quartz
@@ -401,8 +411,8 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
     thread.start()
     try:
         with screen_lock(SCREEN_LOCK, wait=30) as owns, (output / "app.log").open("wb") as log:
-            wait_for("The shared console did not become idle for rehearsal launch",
-                     lambda: owns() and console.available() and console.idle() >= 10, timeout=90)
+            desktop_wait("The shared console did not become idle for rehearsal launch",
+                         lambda: owns() and console.available() and console.idle() >= 10, console, owns, timeout=90)
             point = console.pointer()
             time.sleep(.4)
             require_idle_console(console, owns, point, 10)
@@ -439,7 +449,7 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                         return True
                     return False
 
-                wait_for(description, action, timeout=timeout)
+                desktop_wait(description, action, console, owns, timeout=timeout)
 
             def check_updates():
                 def menu_item():
@@ -457,8 +467,8 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                          lambda: state("restored", ""), proc, timeout=40)
                 if server.saw(server.feed):
                     raise RuntimeError("The fresh rehearsal app performed an automatic update check")
-                screen = wait_for("No frontmost app on an idle console for draft input",
-                                  lambda: idle_target(proc.pid), proc, timeout=90)
+                screen = desktop_wait("No frontmost app on an idle console for draft input",
+                                      lambda: idle_target(proc.pid), console, owns, process=proc, timeout=90)
                 window = wait_for("No native app window for text input", lambda: screen.windows() or None, proc)[0]
                 bounds = window["kCGWindowBounds"]
                 require_idle_console(console, owns, screen.point, 10)
@@ -584,8 +594,8 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                        "and restored the draft")
 
                 app = ax.AXUIElementCreateApplication(new_pid)
-                final_screen = wait_for("The updated app is not frontmost on an idle console",
-                                        lambda: idle_target(new_pid), timeout=90)
+                final_screen = desktop_wait("The updated app is not frontmost on an idle console",
+                                            lambda: idle_target(new_pid), console, owns, timeout=90)
                 final_screen.key("q", final_screen.command)
                 press_control(new_pid, lambda: find(windows(), "AXButton", "Quit"),
                               "Updated Bark did not offer its quit confirmation on an idle console", 90)
