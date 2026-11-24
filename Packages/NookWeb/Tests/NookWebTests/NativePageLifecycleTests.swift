@@ -4242,6 +4242,13 @@ struct NativePageLifecycleTests {
 @Suite(.serialized)
 struct NativeVaultFormTests {
     private func agentCallbacks() async { for _ in 0..<40 { await Task.yield() } }
+    private func waitForState(_ predicate: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !predicate() && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return predicate()
+    }
     private enum VaultSaveEvent: Sendable { case presented, retired }
     private func saveEvents(_ presenter: SyntheticVaultPresenter,
                             _ page: NativeTestPage) -> AsyncStream<VaultSaveEvent>.Iterator {
@@ -4314,14 +4321,15 @@ struct NativeVaultFormTests {
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         await transport.listLogins(["first", "second"])
         let native = f.host.finishCreate(0)
-        native.focusVault(); await agentCallbacks()
-        presenter.pick(1); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
+        presenter.pick(1); try #require(await waitForState { native.vaultFills.count == 1 })
         if repick {
-            native.focusVault(); await agentCallbacks()
-            presenter.pick(0); await agentCallbacks()
+            native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
+            presenter.pick(0); try #require(await waitForState { native.vaultFills.count == 2 })
         }
         native.onEvent?(.committed(URL(string:"https://vault.synthetic.invalid/verify")))
-        native.focusVault(code:true); await agentCallbacks()
+        native.focusVault(code:true)
+        #expect(await waitForState { native.vaultFills.count == (repick ? 3 : 2) })
         #expect(presenter.nativeCompletion == nil)
         #expect(native.vaultFills.map(\.2) == Array(repeating:"synthetic-password", count:repick ? 2 : 1) + ["123456"])
         #expect(await transport.secretIDs == (repick ? ["second", "first", "first"] : ["second", "second"]))
@@ -4335,9 +4343,8 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         var native = f.host.finishCreate(0)
-        native.focusVault(); await agentCallbacks()
-        presenter.pick(); await agentCallbacks()
-        try #require(native.vaultFills.count == 1)
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
+        presenter.pick(); try #require(await waitForState { native.vaultFills.count == 1 })
         switch change {
         case "otherOrigin": native.focusVault(code:true, origin:"https://other.synthetic.invalid")
         case "otherSite":
@@ -4350,12 +4357,11 @@ struct NativeVaultFormTests {
             native.focusVault(code:true)
         case "samePassword": native.focusVault()
         default:
-            native.focusVault(code:true); await agentCallbacks()
-            try #require(native.vaultFills.count == 2 && presenter.nativeCompletion == nil)
+            native.focusVault(code:true)
+            try #require(await waitForState { native.vaultFills.count == 2 && presenter.nativeCompletion == nil })
             native.focusVault(code:true)
         }
-        await agentCallbacks()
-        #expect(presenter.nativeCompletion != nil)
+        #expect(await waitForState { presenter.nativeCompletion != nil })
         #expect(native.vaultFills.count == (change == "spent" ? 2 : change == "otherTab" ? 0 : 1))
     }
 
@@ -4645,14 +4651,6 @@ struct NativeVaultFormTests {
 
     @Test(arguments: ["notRunning", "locked"], [false, true])
     func refocusingAfterVaultRecoveryRestoresFillSaveAndPasskeys(initial: String, previouslyConnected: Bool) async throws {
-        func waitForState(_ predicate: () -> Bool) async -> Bool {
-            let deadline = ContinuousClock.now + .seconds(1)
-            while !predicate() && ContinuousClock.now < deadline {
-                try? await Task.sleep(for: .milliseconds(1))
-            }
-            return predicate()
-        }
-
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
@@ -5122,10 +5120,10 @@ struct NativeVaultFormTests {
         native.passkeyValid = false; native.passkeyCallback?(nil)
         if authenticating { await transport.releaseCeremony() }
         await agentCallbacks()
-        native.focusVault(); await agentCallbacks()
-        #expect(presenter.nativeCompletion != nil)
-        presenter.pick(); await agentCallbacks()
-        #expect(native.vaultFills.count == 1)
+        native.focusVault()
+        try #require(await waitForState { presenter.nativeCompletion != nil })
+        presenter.pick()
+        #expect(await waitForState { native.vaultFills.count == 1 })
     }
 
     @Test func queuedCeremonyCancelledBehindEarlierRpcNeverDispatchesAndCannotClearNewTask() async throws {
