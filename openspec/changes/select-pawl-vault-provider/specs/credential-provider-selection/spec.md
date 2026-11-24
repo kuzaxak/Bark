@@ -51,7 +51,7 @@ Bark SHALL preserve the user's provider selection across disconnects, locks and 
 - **THEN** Chromium does not deliver a stored password to the document
 
 ### Requirement: Bound consent
-Bark SHALL honor a Pawl credential selection only for the chosen account in the requesting foreground field, document, profile and native owner.
+Bark SHALL honor a Pawl credential selection only for the chosen account in the requesting foreground field, document, profile and native owner. The one exception is the same sign-in's other field kind: after Bark fills a password or one-time code from an account the user picked, a genuine gesture on a field of the other kind in the same tab, origin and profile fills once from that account without a second chooser.
 
 #### Scenario: Account chooser outlives the field
 - **GIVEN** passwords or one-time codes exist for an embedded sign-in form
@@ -68,6 +68,18 @@ Bark SHALL honor a Pawl credential selection only for the chosen account in the 
 - **WHEN** the user dismisses authorization, switches the selected Bark tab, pane, profile or window, or changes the focused field
 - **THEN** the original choice expires and no subsequent field receives the secret
 - **AND** if an unrelated application has focus when Pawl replies, Bark leaves that application in the foreground
+
+#### Scenario: Sign-in asks for the one-time code after the password
+- **GIVEN** the user picked an account and Bark filled its password
+- **WHEN** the user clicks or tabs into a one-time code field in the same tab, origin and profile, on the same document or a later one
+- **THEN** Bark fills the code of the picked account without showing the chooser
+- **AND** the same holds for a password field after a picked one-time code
+
+#### Scenario: A picked account is not reused outside its sign-in
+- **GIVEN** the user picked an account and Bark filled a field from it
+- **WHEN** the next field is of the same kind, belongs to another origin, profile or tab, follows a visit to another origin, or follows a field already filled from that pick
+- **THEN** Bark shows the chooser and fills nothing until the user selects an account
+- **AND** a pick the user replaced with another account is forgotten
 
 #### Scenario: A login changes while the vault is authorizing a fill
 - **GIVEN** the user picked an account for a password field

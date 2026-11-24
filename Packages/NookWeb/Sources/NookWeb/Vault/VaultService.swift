@@ -285,6 +285,20 @@ public final class VaultService {
         NotificationCenter.default.post(name: Self.nativeStateChanged, object: self)
     }
 }
+/// A Pawl entry the user picked and Bark filled in a tab. The same sign-in's other field kind on
+/// that origin, such as the one-time code after the password, fills once from it without a picker.
+struct NativeVaultChoice {
+    let origin: String
+    let profile: String
+    let loginID: String
+    let filledCode: Bool
+
+    func isSameOrigin(as url: URL?) -> Bool {
+        guard let url, let site = URL(string: origin) else { return false }
+        return site.scheme == url.scheme && site.host() == url.host() && site.port == url.port
+    }
+}
+
 @MainActor
 private final class NativeVaultAttachment {
     weak var service: VaultService?
@@ -307,6 +321,7 @@ private final class NativeVaultAttachment {
     private struct AuthorizedFill {
         let username: String
         let secret: String
+        let chosen: String?
         let peer: VaultVerifiedPeer?
         let deadline: ContinuousClock.Instant
     }
@@ -838,17 +853,21 @@ private final class NativeVaultAttachment {
         }
         authorizedFill = nil
         let admitted = page.fillVault(focus.token, username: reply.username, secret: reply.secret)
+        if admitted, let chosen = reply.chosen, let profile = page.vaultProfileID?.uuidString {
+            session?.nativeVaultChoice = NativeVaultChoice(origin: focus.origin, profile: profile,
+                                                           loginID: chosen, filledCode: focus.isCode)
+        }
         if self.generation == generation { cancel(showRetry: !admitted) }
     }
 
-    private func receiveAuthorizedFill(username: String, secret: String, lifetime: Duration,
+    private func receiveAuthorizedFill(username: String, secret: String, lifetime: Duration, chosen: String?,
                                        peer: VaultVerifiedPeer?, focus: VaultNativeFocus, generation: UInt64) {
         guard current(focus, generation, foreground: false), lifetime > .zero else {
             if self.generation == generation { cancel(showRetry: true) }
             return
         }
         let deadline = ContinuousClock.now + min(lifetime, .seconds(5))
-        authorizedFill = AuthorizedFill(username: username, secret: secret, peer: peer, deadline: deadline)
+        authorizedFill = AuthorizedFill(username: username, secret: secret, chosen: chosen, peer: peer, deadline: deadline)
         deliverAuthorizedFill(generation)
         guard self.generation == generation, authorizedFill != nil else { return }
         fillExpiry = Task { [weak self] in
@@ -911,9 +930,17 @@ private final class NativeVaultAttachment {
                   let view = focus.view else { return }
             let items = focus.isCode ? logins.filter(\.hasCode).map(VaultPickerItem.init(code:)) : logins.map(VaultPickerItem.init(_:))
             guard !items.isEmpty else { return }
-            self.pickerView = view
-            presenter.presentNativePicker(host: host, items: items, anchor: focus.anchor, in: view,
-                validateSelection: { [weak self] in self?.current(focus, generation, foreground: false) == true }) { [weak self] result in
+            let reused = self.session?.nativeVaultChoice.flatMap { choice -> VaultPickerItem? in
+                guard choice.origin == focus.origin, choice.profile == profile,
+                      choice.filledCode != focus.isCode else { return nil }
+                return items.first { item in
+                    switch item.kind {
+                    case .login(let id), .code(let id): id == choice.loginID
+                    case .passkey: false
+                    }
+                }
+            }
+            let select: (VaultNativePickerResult) -> Void = { [weak self] result in
                 guard let self, self.generation == generation, self.focus?.token == focus.token else { return }
                 let item: VaultPickerItem
                 switch result {
@@ -934,8 +961,8 @@ private final class NativeVaultAttachment {
                     return
                 }
                 self.pickerView = nil
-                // The native picker is consent. Secrets are fetched only now,
-                // after rechecking the exact page/profile/document/field.
+                // The native picker, or the same sign-in's earlier pick, is consent. Secrets are
+                // fetched only now, after rechecking the exact page/profile/document/field.
                 Task { [weak self, weak service] in
                     guard let self, let service else { return }
                     guard self.current(focus, generation) else {
@@ -948,16 +975,25 @@ private final class NativeVaultAttachment {
                         case .login(let id) where !focus.isCode:
                             let (reply, peer) = try await service.password(for: id, in: logins, origin: focus.origin, profile: profile)
                             self.receiveAuthorizedFill(username: reply.username, secret: reply.password, lifetime: .seconds(5),
-                                                       peer: peer, focus: focus, generation: generation)
+                                                       chosen: reused == nil ? id : nil, peer: peer, focus: focus, generation: generation)
                         case .code(let id) where focus.isCode:
                             let (reply, peer) = try await service.sendForFill(VaultCode(id: id, origin: focus.origin, profile: profile))
                             self.receiveAuthorizedFill(username: "", secret: reply.code, lifetime: .seconds(reply.remaining),
-                                                       peer: peer, focus: focus, generation: generation)
+                                                       chosen: reused == nil ? id : nil, peer: peer, focus: focus, generation: generation)
                         default: self.cancel()
                         }
                     } catch { if self.generation == generation { self.cancel(showRetry: true) } }
                 }
             }
+            if let reused {
+                self.session?.nativeVaultChoice = nil
+                select(.selected(reused))
+                return
+            }
+            self.pickerView = view
+            presenter.presentNativePicker(host: host, items: items, anchor: focus.anchor, in: view,
+                validateSelection: { [weak self] in self?.current(focus, generation, foreground: false) == true },
+                completion: select)
         }
     }
 }

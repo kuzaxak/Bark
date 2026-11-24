@@ -4306,6 +4306,60 @@ struct NativeVaultFormTests {
     }
 
     @Test(arguments: [false, true])
+    func signInsNextStepFillsItsCodeFromThePickedEntry(repick: Bool) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        let vault = VaultService(settings:f.tabs.settings,client:transport)
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        await transport.listLogins(["first", "second"])
+        let native = f.host.finishCreate(0)
+        native.focusVault(); await agentCallbacks()
+        presenter.pick(1); await agentCallbacks()
+        if repick {
+            native.focusVault(); await agentCallbacks()
+            presenter.pick(0); await agentCallbacks()
+        }
+        native.onEvent?(.committed(URL(string:"https://vault.synthetic.invalid/verify")))
+        native.focusVault(code:true); await agentCallbacks()
+        #expect(presenter.nativeCompletion == nil)
+        #expect(native.vaultFills.map(\.2) == Array(repeating:"synthetic-password", count:repick ? 2 : 1) + ["123456"])
+        #expect(await transport.secretIDs == (repick ? ["second", "first", "first"] : ["second", "second"]))
+    }
+
+    @Test(arguments: ["otherOrigin", "otherSite", "otherTab", "samePassword", "spent"])
+    func pickedEntryFillsOnlyItsOwnSignInOnce(change: String) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        let vault = VaultService(settings:f.tabs.settings,client:transport)
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        var native = f.host.finishCreate(0)
+        native.focusVault(); await agentCallbacks()
+        presenter.pick(); await agentCallbacks()
+        try #require(native.vaultFills.count == 1)
+        switch change {
+        case "otherOrigin": native.focusVault(code:true, origin:"https://other.synthetic.invalid")
+        case "otherSite":
+            native.onEvent?(.committed(URL(string:"https://other.synthetic.invalid/")))
+            native.onEvent?(.committed(URL(string:"https://vault.synthetic.invalid/verify")))
+            native.focusVault(code:true)
+        case "otherTab":
+            _ = try #require(f.tabs.open(url:URL(string:"https://vault.synthetic.invalid")!, in:f.window, placement:.newTab))
+            native = f.host.finishCreate(f.host.creates.count - 1)
+            native.focusVault(code:true)
+        case "samePassword": native.focusVault()
+        default:
+            native.focusVault(code:true); await agentCallbacks()
+            try #require(native.vaultFills.count == 2 && presenter.nativeCompletion == nil)
+            native.focusVault(code:true)
+        }
+        await agentCallbacks()
+        #expect(presenter.nativeCompletion != nil)
+        #expect(native.vaultFills.count == (change == "spent" ? 2 : change == "otherTab" ? 0 : 1))
+    }
+
+    @Test(arguments: [false, true])
     func pickerOmitsUnaddressableLoginsBeforeFilteringForCodes(code: Bool) async throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -5221,13 +5275,13 @@ private final class SyntheticVaultPresenter: VaultPresenter {
         self.items = items; nativeValidation = validateSelection; nativeCompletion = completion
     }
     func ownsNativePicker(in view:NSView)->Bool { owns && nativeCompletion != nil }
-    func pick() {
+    func pick(_ index: Int = 0) {
         if let done = nativeCompletion {
             let valid = nativeValidation?() == true
             nativeCompletion = nil
             guard valid else { done(.cancelled); return }
             guard restore?() ?? true else { done(.focusUnavailable); return }
-            if let item = items.first { done(.selected(item)) } else { done(.cancelled) }
+            if items.indices.contains(index) { done(.selected(items[index])) } else { done(.cancelled) }
         }
     }
     func dismissPicker(in view:NSView) {
@@ -5286,6 +5340,9 @@ private actor SyntheticVaultRequests: VaultRequests {
         queuedContinuation?.resume(); queuedContinuation = nil
     }
     var listedUsername = "synthetic-user"
+    var listedIDs = ["synthetic"]
+    func listLogins(_ ids: [String]) { listedIDs = ids }
+    var secretIDs: [String] = []
     var passwordUsername = "synthetic-user"
     func passwordUsers(listed:String, reply:String) { listedUsername = listed; passwordUsername = reply }
     var listedCredentials = ["AQ"]
@@ -5355,6 +5412,7 @@ private actor SyntheticVaultRequests: VaultRequests {
             try await withCheckedThrowingContinuation { lookupPending = $0 }
         }
         if C.method == "password" || C.method == "code" {
+            secretIDs.append(params["id"] as? String ?? "")
             started.continuation.yield(())
             if held, await withCheckedContinuation({ pending = $0 }) {
                 throw VaultClientError.server(.denied, "synthetic")
@@ -5382,7 +5440,7 @@ private actor SyntheticVaultRequests: VaultRequests {
                 let exists = (params["username"] as? String) == "synthetic-user"
                 result = ["disposition": exists ? "update" : "create", "ticket": writeScenario == "invalidTicket" ? "" : "test-ticket"]
             }
-        case "logins": result = ["logins":[["id":"synthetic","username":listedUsername,"title":"Fixture","hasCode":true]]]
+        case "logins": result = ["logins":listedIDs.map { ["id":$0,"username":listedUsername,"title":"Fixture","hasCode":true] }]
         case "passkeys":
             passkeyAllowed.append(params["allowCredentials"] as? [String] ?? [])
             result = ["passkeys":listedCredentials.map { ["credentialId":$0,"userName":"synthetic-user","title":"Synthetic"] }]
