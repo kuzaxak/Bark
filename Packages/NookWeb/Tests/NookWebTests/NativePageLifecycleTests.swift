@@ -4242,12 +4242,12 @@ struct NativePageLifecycleTests {
 @Suite(.serialized)
 struct NativeVaultFormTests {
     private func agentCallbacks() async { for _ in 0..<40 { await Task.yield() } }
-    private func waitForState(_ predicate: () -> Bool) async -> Bool {
+    private func waitForState(_ predicate: () async -> Bool) async -> Bool {
         let deadline = ContinuousClock.now + .seconds(1)
-        while !predicate() && ContinuousClock.now < deadline {
+        while await !predicate(), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(1))
         }
-        return predicate()
+        return await predicate()
     }
     private enum VaultSaveEvent: Sendable { case presented, retired }
     private func saveEvents(_ presenter: SyntheticVaultPresenter,
@@ -4299,13 +4299,12 @@ struct NativeVaultFormTests {
         _ = await vault.refresh()
         let native = f.host.finishCreate(0)
         native.focusVault(code:code)
-        await agentCallbacks()
+        try #require(await waitForState { presenter.nativeCompletion != nil })
         #expect(presenter.items.count == 1)
         let before = await transport.methods
         #expect(before.contains("logins") && !before.contains("password") && !before.contains("code"))
         presenter.pick()
-        await agentCallbacks()
-        #expect(native.vaultFills.count == 1)
+        #expect(await waitForState { native.vaultFills.count == 1 })
         #expect(native.vaultFills.first?.1 == (code ? "" : "synthetic-user"))
         #expect(native.vaultFills.first?.2 == (code ? "123456" : "synthetic-password"))
         let calls = await transport.contexts
@@ -4388,11 +4387,10 @@ struct NativeVaultFormTests {
         _ = await vault.refresh()
         let native = fixture.host.finishCreate(0)
         native.focusVault(code: code)
-        await agentCallbacks()
+        try #require(await waitForState { presenter.nativeCompletion != nil })
         try #require(presenter.items.map(\.id) == [code ? "code:unique" : "login:unique"])
         presenter.pick()
-        await agentCallbacks()
-        #expect(native.vaultFills.count == 1)
+        #expect(await waitForState { native.vaultFills.count == 1 })
         #expect(native.vaultFills.first?.2 == (code ? "246810" : "fixture-password"))
     }
 
@@ -4405,19 +4403,18 @@ struct NativeVaultFormTests {
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
         await transport.passwordUsers(listed:listed, reply:"synthetic-user")
-        native.focusVault(); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         try #require(presenter.items.count == 1 && presenter.nativeCompletion != nil)
         presenter.pick(); await agentCallbacks()
-        #expect(await transport.methods.filter { $0 == "password" }.count == 1)
+        #expect(await waitForState { await transport.methods.filter { $0 == "password" }.count == 1 })
         #expect(native.vaultFills.isEmpty)
 
         native.vaultFills.removeAll()
         await transport.passwordUsers(listed:listed, reply:listed)
-        native.focusVault(); await agentCallbacks()
-        try #require(presenter.nativeCompletion != nil)
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         presenter.pick(); await agentCallbacks()
-        #expect(await transport.methods.filter { $0 == "password" }.count == 2)
-        #expect(native.vaultFills.count == 1 && native.vaultFills.first?.1 == listed)
+        #expect(await waitForState { await transport.methods.filter { $0 == "password" }.count == 2 })
+        #expect(await waitForState { native.vaultFills.count == 1 && native.vaultFills.first?.1 == listed })
     }
 
     @Test(arguments:[false,true])
@@ -4428,7 +4425,7 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.focusVault(code:isCode); await agentCallbacks()
+        native.focusVault(code:isCode); try #require(await waitForState { presenter.nativeCompletion != nil })
         let select = try #require(presenter.nativeCompletion)
         #expect(presenter.items.map(\.id) == [isCode ? "code:synthetic" : "login:synthetic"])
         let unoffered = VaultLogin(id:"unoffered",username:"synthetic-user",title:"Fixture",hasCode:true)
@@ -4448,7 +4445,7 @@ struct NativeVaultFormTests {
         vault.presenter = presenter; f.tabs.vault = vault
         _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.focusVault(); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.holdSecret()
         presenter.pick()
         for await _ in transport.started.stream { break }
@@ -4479,14 +4476,14 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.focusVault(); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         native.vaultCurrent = false; native.vaultFocus?(nil)
         #expect(presenter.nativeCompletion != nil)
         presenter.restore = { native.vaultCurrent = restored; return restored }
         presenter.pick(); await agentCallbacks()
+        #expect(await waitForState { native.vaultFills.count == (restored ? 1 : 0) })
         let methods = await transport.methods
         #expect(methods.contains("password") == restored)
-        #expect(native.vaultFills.count == (restored ? 1 : 0))
         if !restored {
             let page = try #require(f.window.selectedItemID.flatMap { f.tabs.session(for:$0) })
             #expect(page.nativeVaultNotice != nil)
@@ -4500,9 +4497,9 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.focusVault(); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         let oldChoice = presenter.nativeCompletion, oldValidation = presenter.nativeValidation
-        native.focusVault(code:true); await agentCallbacks()
+        native.focusVault(code:true); try #require(await waitForState { presenter.nativeCompletion != nil })
         #expect(oldValidation?() == false)
         oldChoice?(.selected(try #require(presenter.items.first)))
         #expect(presenter.nativeCompletion != nil)
@@ -4543,8 +4540,7 @@ struct NativeVaultFormTests {
         owner.contentView = native.vaultView
         native.focusVault(code: code)
         let token = native.vaultSerial
-        await agentCallbacks()
-        try #require(presenter.nativeCompletion != nil)
+        try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.holdSecret()
         presenter.pick()
         for await _ in transport.started.stream { break }
@@ -4592,13 +4588,13 @@ struct NativeVaultFormTests {
         await transport.releaseSecret(denied: change == "denied")
         await agentCallbacks()
         if change != "returnFirst" { #expect(native.vaultFills.isEmpty) }
-        if change == "replyFirst" || change == "nilBeforeResign" { #expect(activations == [expectedPeer.pid]) }
+        if change == "replyFirst" || change == "nilBeforeResign" { #expect(await waitForState { activations == [expectedPeer.pid] }) }
         else { #expect(activations.isEmpty) }
 
         returnToOwner()
         await agentCallbacks()
         if change == "replyFirst" || change == "returnFirst" || change == "nilBeforeResign" {
-            #expect(native.vaultFills.count == 1)
+            #expect(await waitForState { native.vaultFills.count == 1 })
             #expect(native.vaultFills.first?.0 == token)
             #expect(native.vaultFills.first?.1 == (code ? "" : "synthetic-user"))
             #expect(native.vaultFills.first?.2 == (code ? "123456" : "synthetic-password"))
@@ -4615,16 +4611,15 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.focusVault(); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.holdSecret(); presenter.pick()
         for await _ in transport.started.stream { break }
-        native.focusVault(code:true); await agentCallbacks()
-        #expect(presenter.nativeCompletion != nil)
+        native.focusVault(code:true); try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.releaseSecret(); await agentCallbacks()
         #expect(presenter.nativeCompletion != nil && native.vaultFocus != nil)
         #expect(native.vaultFills.isEmpty)
-        presenter.pick(); await agentCallbacks()
-        #expect(native.vaultFills.count == 1 && native.vaultFills.first?.2 == "123456")
+        presenter.pick()
+        #expect(await waitForState { native.vaultFills.count == 1 && native.vaultFills.first?.2 == "123456" })
     }
 
     @Test func stoppedOldAttachmentDeinitCannotDetachReplacementOnSamePage() async throws {
@@ -4636,17 +4631,17 @@ struct NativeVaultFormTests {
         let native = f.host.finishCreate(0)
         let page = try #require(f.window.selectedItemID.flatMap { f.tabs.session(for:$0) })
         var stopOld: (@MainActor () -> Void)? = vault.attach(to:native,session:page)
-        native.focusVault(); await agentCallbacks()
+        native.focusVault(); try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.holdSecret(); presenter.pick()
         for await _ in transport.started.stream { break }
         stopOld?(); stopOld = nil
         let stopNew = vault.attach(to:native,session:page); defer { stopNew() }
-        native.focusVault(code:true); await agentCallbacks()
+        native.focusVault(code:true); try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.releaseSecret(); await agentCallbacks()
         #expect(native.vaultFocus != nil && presenter.nativeCompletion != nil)
         #expect(native.vaultFills.isEmpty)
-        presenter.pick(); await agentCallbacks()
-        #expect(native.vaultFills.count == 1 && native.vaultFills.first?.2 == "123456")
+        presenter.pick()
+        #expect(await waitForState { native.vaultFills.count == 1 && native.vaultFills.first?.2 == "123456" })
     }
 
     @Test(arguments: ["notRunning", "locked"], [false, true])
@@ -4702,9 +4697,8 @@ struct NativeVaultFormTests {
         await agentCallbacks()
         let before = await transport.methods.filter { $0 == "hello" }.count
         native.onEvent?(.started(URL(string:"https://vault.synthetic.invalid/one")))
-        await agentCallbacks()
+        #expect(await waitForState { await transport.methods.filter { $0 == "hello" }.count == before + 1 })
         let once = await transport.methods.filter { $0 == "hello" }.count
-        #expect(once == before + 1)
         native.onEvent?(.started(URL(string:"https://vault.synthetic.invalid/two")))
         await agentCallbacks()
         let twice = await transport.methods.filter { $0 == "hello" }.count
@@ -4729,7 +4723,7 @@ struct NativeVaultFormTests {
         page.vaultDocumentCurrent = false
         await transport.resumeHello()
         await agentCallbacks()
-        #expect(vault.isConnected && page.passkeyCallback != nil && page.vaultSave != nil)
+        #expect(await waitForState { vault.isConnected && page.passkeyCallback != nil && page.vaultSave != nil })
         #expect(presenter.nativeCompletion == nil && page.vaultFills.isEmpty)
         let methods = await transport.methods
         #expect(!methods.contains("logins") && !methods.contains("password"))
@@ -4962,7 +4956,7 @@ struct NativeVaultFormTests {
         await transport.releaseSave(); await agentCallbacks()
         #expect(presenter.saveCompletion != nil && native.vaultSaveValid)
         replacement(false); await agentCallbacks()
-        #expect(await transport.saves.count == 1)
+        #expect(await waitForState { await transport.saves.count == 1 })
     }
 
     @Test(arguments:[Int32(0),Int32(1)])
@@ -4979,10 +4973,10 @@ struct NativeVaultFormTests {
             #expect(presenter.creationConsent != nil)
             let reply = presenter.creationConsent; presenter.creationConsent = nil; reply?(true)
         } else {
-            #expect(presenter.nativeCompletion != nil)
+            try #require(await waitForState { presenter.nativeCompletion != nil })
             presenter.pick()
         }
-        await agentCallbacks()
+        #expect(await waitForState { native.passkeyReplies.filter { $0.1 != nil }.count == 1 })
         let calls = await transport.ceremonies
         #expect(calls.count == 1 && calls.first?.0 == (operation == 0 ? "register" : "assert"))
         #expect(calls.first?.1 == "vault.synthetic.invalid")
@@ -5146,9 +5140,9 @@ struct NativeVaultFormTests {
         await agentCallbacks()
         #expect(await transport.ceremonies.isEmpty)
         #expect(presenter.creationConsent != nil && native.passkeyValid)
-        newer(true); await agentCallbacks()
+        newer(true)
+        #expect(await waitForState { native.passkeyReplies.filter { $0.1 != nil }.count == 1 })
         #expect(await transport.ceremonies.count == 1)
-        #expect(native.passkeyReplies.filter { $0.1 != nil }.count == 1)
     }
 
     @Test(arguments:["AQ", "", "missing"])
@@ -5160,11 +5154,10 @@ struct NativeVaultFormTests {
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.requestPasskey(operation:1,emptyAllow:true); await agentCallbacks()
+        native.requestPasskey(operation:1,emptyAllow:true); try #require(await waitForState { presenter.nativeCompletion != nil })
         #expect(await transport.passkeyAllowed == [[]])
-        #expect(presenter.nativeCompletion != nil)
         #expect(await transport.ceremonies.isEmpty)
-        presenter.pick(); await agentCallbacks()
+        presenter.pick(); try #require(await waitForState { native.passkeyReplies.count == 1 })
         let results = native.passkeyReplies.compactMap { $0.1 }
         #expect(results.count == (handle == "AQ" ? 1 : 0))
         if let result = results.first {
@@ -5186,12 +5179,11 @@ struct NativeVaultFormTests {
             // Aw repeats, BA and BB encode the same bytes, and BR lacks a canonical row.
             await transport.assertionCredentials(listed:["AQ","Aw","BA","","Ag","BB","Aw","BR"], reply:returnedID)
             native.requestPasskey(operation:1,emptyAllow:emptyAllow,allowed:["AQ","Ag"])
-            await agentCallbacks()
+            try #require(await waitForState { presenter.nativeCompletion != nil })
             try #require(presenter.items.map(\.id) == ["passkey:AQ","passkey:Ag"])
-            try #require(presenter.nativeCompletion != nil)
             let count = native.passkeyReplies.count
-            presenter.pick(); await agentCallbacks()
-            #expect(native.passkeyReplies.count == count + 1)
+            presenter.pick()
+            try #require(await waitForState { native.passkeyReplies.count == count + 1 })
             let result = native.passkeyReplies.last?.1
             if returnedID == "AQ" {
                 let payload = try #require(result)
@@ -5237,12 +5229,11 @@ struct NativeVaultFormTests {
         await transport.holdNextLookup()
         native.focusVault()
         for await _ in transport.lookupStarted.stream { break }
-        native.focusVault(code:true); await agentCallbacks()
-        #expect(presenter.nativeCompletion != nil)
+        native.focusVault(code:true); try #require(await waitForState { presenter.nativeCompletion != nil })
         await transport.failLookup(); await agentCallbacks()
         #expect(presenter.nativeCompletion != nil)
-        presenter.pick(); await agentCallbacks()
-        #expect(native.vaultFills.first?.2 == "123456")
+        presenter.pick()
+        #expect(await waitForState { native.vaultFills.first?.2 == "123456" })
     }
 
     @Test func disconnectedAndUnsafeOriginNeverOpenPickerOrFetchSecrets() async throws {
