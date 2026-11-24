@@ -59,9 +59,14 @@ enum ChromiumNavigationError: Error { case screenshotUnavailable }
 @MainActor final class Tabs {
     var nativePageHost: NativeHost? = NativeHost()
 }
+@MainActor final class PeekManager {
+    var selection: PageSession?
+    func isNativeSelection(_ page: PageSession, in window: BrowserWindowState) -> Bool { page === selection }
+}
 @MainActor final class BrowserManager {
     var windowRegistry: WindowRegistry? = WindowRegistry()
     let tabs = Tabs()
+    let peekManager = PeekManager()
     var front: PageSession?
     var toasts: [String] = []
     func frontPage(in window: BrowserWindowState) -> PageSession? { front }
@@ -174,6 +179,24 @@ enum ChromiumNavigationError: Error { case screenshotUnavailable }
         portrait.page.nativeNavigationSerial += 1
         precondition(!lease.isCurrent())
         precondition(NSPasteboard.general.images.isEmpty)
+        // A Peek card's page is Chromium's selection while the window's layout still holds its tab.
+        let peek = Fixture()
+        peek.manager.tabs.nativePageHost?.selected = false
+        peek.manager.peekManager.selection = peek.page
+        let peekCopy = await peek.begin()
+        peek.native.finish()
+        let peekCopied = await peekCopy.value
+        precondition(peekCopied && NSPasteboard.general.images.count == 1 && peek.manager.toasts == ["Screenshot copied"],
+                     "the Peek in front is copied like a tab")
+        let dismissed = Fixture()
+        dismissed.manager.tabs.nativePageHost?.selected = false
+        dismissed.manager.peekManager.selection = dismissed.page
+        let dismissal = await dismissed.begin()
+        dismissed.manager.peekManager.selection = nil
+        dismissed.native.finish()
+        let afterDismissal = await dismissal.value
+        precondition(!afterDismissal)
+        dismissed.expectUntouched()
         let deniedPortrait = Fixture()
         deniedPortrait.manager.tabs.nativePageHost?.selected = false
         let denied = await deniedPortrait.manager.captureNativeScreenshot(of: deniedPortrait.page, in: deniedPortrait.window)

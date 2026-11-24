@@ -70,7 +70,8 @@ extension BrowserManager {
             guard native.supportsTranslation, page.canTranslate || page.isTranslated else { return false }
             page.toggleTranslation(); return true
         }
-        guard tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return false }
+        guard tabs.nativePageHost?.isNativeSelection(native, in: window) == true ||
+              peekManager.isNativeSelection(page, in: window) else { return false }
         if command == .boost { openBoostPanel(in: window); return true }
         if command == .developerMode {
             guard page.url.host != nil else { return false }
@@ -130,7 +131,8 @@ extension BrowserManager {
                 self.frontPage(in: window) === page && page.navigation === native &&
                 page.nativeNavigationSerial == serial && !native.isClosed &&
                 native.nativeWindowID == owner && native.nativeTabID == tab && native.profileID == profile &&
-                self.tabs.nativePageHost?.isNativeSelection(native, in: window) == true
+                (self.tabs.nativePageHost?.isNativeSelection(native, in: window) == true ||
+                 self.peekManager.isNativeSelection(page, in: window))
         }
         guard current() else { return nil }
         let image: NSImage
