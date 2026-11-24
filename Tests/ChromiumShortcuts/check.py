@@ -16,6 +16,17 @@ with tempfile.TemporaryDirectory(prefix='bark-shortcuts-') as directory:
     start = shortcuts.index('    private func executeAction(')
     end = shortcuts.index('        if action == .addSplitView', start)
     dispatch = shortcuts[start:end].replace('private func executeAction', 'func executeAction')
+    start = shortcuts.index('    private let userDefaults: UserDefaults')
+    end = shortcuts.index('    weak var browserManager: BrowserManager?', start)
+    stored = shortcuts[start:end]
+    start = shortcuts.index('    // MARK: - Persistence')
+    end = shortcuts.index('    /// Sets an action', start)
+    # The shipped load and migration over an in-memory store in place of UserDefaults.
+    (out / 'ShortcutStore.swift').write_text(
+        'import Foundation\n@MainActor final class ShortcutStoreFixture {\n' +
+        (stored + shortcuts[start:end]).replace('UserDefaults', 'ShortcutDefaults') +
+        '    var onShortcutsChanged: (() -> Void)?\n'
+        '    init(userDefaults: ShortcutDefaults) {\n        self.userDefaults = userDefaults\n        loadShortcuts()\n    }\n}\n')
     (out / 'ExtensionShortcut.swift').write_text(
         'import AppKit\nextension ExtensionBrowserFixture {\n' + extension_action +
         '}\nextension ExtensionShortcutFixture {\n' + dispatch +
@@ -25,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='bark-shortcuts-') as directory:
          '-I', str(root / 'Packages/BarkEngine/BarkEngine.xcframework/macos-arm64_x86_64/Headers'),
          str(root / 'Nook/Models/KeyboardShortcut/KeyboardShortcut.swift'), str(root / 'Nook/Managers/BrowserManager/FrontPage.swift'),
          str(root / 'Nook/Managers/KeyboardShortcutManager/CommandWindow.swift'),
-         str(out / 'ChromiumPageCommands.swift'), str(out / 'ExtensionShortcut.swift'),
+         str(out / 'ChromiumPageCommands.swift'), str(out / 'ExtensionShortcut.swift'), str(out / 'ShortcutStore.swift'),
          str(root / 'Tests/ChromiumShortcuts/Main.swift'), '-o', str(binary)]
     p = subprocess.run(c, capture_output=True, text=True)
     print(p.stdout + p.stderr)

@@ -95,7 +95,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
     // Missing actions that exist in NookCommands but not here
     case focusAddressBar = "focus_address_bar"  // Cmd+L
     case findInPage = "find_in_page"            // Cmd+F
-    case zoomIn = "zoom_in"                     // Cmd++
+    case zoomIn = "zoom_in"                     // Cmd+=
     case zoomOut = "zoom_out"                   // Cmd+-
     case actualSize = "actual_size"             // Cmd+0
 
@@ -407,12 +407,20 @@ struct KeyCombination: Hashable, Codable {
     }
 
     /// What a press can be bound as, first match wins: what it types, then for ⌘ and Control a key
-    /// matched by where it sits (`positionalKeys`).
+    /// matched by where it sits (`positionalKeys`), then a + without the Shift a US keyboard types it
+    /// with, as + and as the = key it shares there.
     static func lookupKeys(for event: NSEvent) -> [String] {
         guard let typed = KeyCombination(from: event) else { return [] }
-        guard !typed.modifiers.isDisjoint(with: [.command, .control]),
-              let key = positionalKeys[event.keyCode], key != typed.key else { return [typed.lookupKey] }
-        return [typed.lookupKey, KeyCombination(key: key, modifiers: typed.modifiers).lookupKey]
+        guard !typed.modifiers.isDisjoint(with: [.command, .control]) else { return [typed.lookupKey] }
+        var keys = [typed]
+        if let key = positionalKeys[event.keyCode], key != typed.key {
+            keys.append(KeyCombination(key: key, modifiers: typed.modifiers))
+        }
+        if typed.key == "+" {
+            let unshifted = typed.modifiers.subtracting(.shift)
+            keys += [KeyCombination(key: "+", modifiers: unshifted), KeyCombination(key: "=", modifiers: unshifted)]
+        }
+        return keys.map(\.lookupKey)
     }
 
     /// Keys also matched by position, named by their US character. Arc's ⌃⇧= is the key right of 0
@@ -553,7 +561,7 @@ extension KeyboardShortcut {
             // Missing shortcuts that exist in NookCommands
             KeyboardShortcut(action: .focusAddressBar, keyCombination: KeyCombination(key: "l", modifiers: [.command])),
             KeyboardShortcut(action: .findInPage, keyCombination: KeyCombination(key: "f", modifiers: [.command])),
-            KeyboardShortcut(action: .zoomIn, keyCombination: KeyCombination(key: "+", modifiers: [.command])),
+            KeyboardShortcut(action: .zoomIn, keyCombination: KeyCombination(key: "=", modifiers: [.command])),
             KeyboardShortcut(action: .zoomOut, keyCombination: KeyCombination(key: "-", modifiers: [.command])),
             KeyboardShortcut(action: .actualSize, keyCombination: KeyCombination(key: "0", modifiers: [.command])),
 
