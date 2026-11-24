@@ -334,7 +334,7 @@ def header_cases(work):
     check('outside the table the header declares only the entry, the digest and the table',
           declared == {ENTRY, TABLE, 'barc_public_headers_sha256'}, declared)
     table_body = re.search(r'struct BarcBridge \{(.*?)\n\};', header, re.S)[1]
-    members = re.findall(r'\(\* _Nonnull (\w+)\)', table_body)
+    members = re.findall(r'\(\* _(?:Nonnull|Nullable) (\w+)\)', table_body)
     check('after its size every table member is a function pointer the engine fills',
           re.match(r'\s*size_t size;', table_body) is not None and len(members) == len(set(members)) > 0 and
           table_body.count('(*') == len(members), (len(members), table_body.count('(*')))
