@@ -35,6 +35,8 @@ Page commands and Zoom In work in Peek, and a two-step sign-in asks for the acco
 - After you pick an account for a password, the one-time code field of the same sign-in fills from that account without asking again, and the same the other way round
 - The release job no longer fails on a draft release's temporary download links
 
+## 1.5.4
+
 A page with a certificate that is not valid, such as a device opened by its IP address, says why and can be opened anyway, as in Safari, instead of showing a blank tab.
 
 ### Fixed
