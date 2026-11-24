@@ -24,7 +24,16 @@ Zoom shortcuts show the current percentage on the focused page, including in spl
 - The space bar at the bottom of the sidebar shows which space is current, as in Arc: that space's icon or emoji is at full strength and the others are faded and grey, hovering one brings it part way back, and a swipe between spaces cross-fades them
 - The sidebar button beside the window's traffic lights sits a little more than one light's gap past them, as in Arc. On macOS 26, whose lights are larger and further apart, it no longer touches the green button. On macOS 15 it stays where it was in the sidebar, and the hidden sidebar's floating panel now puts it there too instead of 8 points further right
 
-## 1.5.4
+## 2.0.2
+
+Page commands and Zoom In work in Peek, and a two-step sign-in asks for the account once.
+
+### Fixed
+
+- Reload, Back, Forward, Find, Copy URL, Print, developer tools and screenshots act on an open Peek instead of doing nothing
+- Zoom In is Command-= by default, the key the menu shows, and a shortcut still set to the old default moves to it
+- After you pick an account for a password, the one-time code field of the same sign-in fills from that account without asking again, and the same the other way round
+- The release job no longer fails on a draft release's temporary download links
 
 A page with a certificate that is not valid, such as a device opened by its IP address, says why and can be opened anyway, as in Safari, instead of showing a blank tab.
 
