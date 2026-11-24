@@ -230,6 +230,9 @@ public final class PageSession: NSObject, Identifiable {
     /// Reading the bound engine page never creates or loads a resource.
     public var nativeVaultNotice: String?
     @ObservationIgnored private var nativeVaultDetach: (@MainActor () -> Void)?
+    #if os(macOS)
+    @ObservationIgnored var nativeVaultChoice: NativeVaultChoice?
+    #endif
     public internal(set) var navigation: (any PageNavigation)? {
         didSet {
             guard oldValue !== navigation else { return }
@@ -240,6 +243,7 @@ public final class PageSession: NSObject, Identifiable {
             #if os(macOS)
             nativeVaultDetach?()
             nativeVaultDetach = nil
+            nativeVaultChoice = nil
             if !isAgentPage, let page = navigation as? any VaultNativePage, let vault = controller?.vault {
                 nativeVaultDetach = vault.attach(to: page, session: self)
             }
@@ -559,6 +563,9 @@ public final class PageSession: NSObject, Identifiable {
                 loadingState = .didFinish
             }
             if !sameDocument { resetTranslation(); clearNativeMediaForDocumentEnd(); resetNativeBoostCSS() }
+            #if os(macOS)
+            if !sameDocument, nativeVaultChoice?.isSameOrigin(as: newURL) == false { nativeVaultChoice = nil }
+            #endif
             switcherSnapshot = nil
             if let newURL { navigationDocumentURL = newURL }
             if newURL != nil { navigationHasCommittedPage = true }
