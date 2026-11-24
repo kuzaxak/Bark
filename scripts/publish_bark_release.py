@@ -42,10 +42,10 @@ class Asset:
             raise ValueError(f"Missing release asset {path}.")
         return cls(path, path.stat().st_size, "sha256:" + file_digest(path))
 
-    def check_remote(self, remote, tag):
+    def check_remote(self, remote, tag, *, published=True):
         if (remote["state"] != "uploaded" or remote["size"] != self.size
                 or remote.get("digest") != self.digest
-                or remote["browser_download_url"] != download_url(tag, self.path.name)):
+                or published and remote["browser_download_url"] != download_url(tag, self.path.name)):
             raise ValueError(f"GitHub's {tag}/{self.path.name} differs from the verified asset.")
 
 
@@ -207,7 +207,7 @@ def check_remote_assets(github, release, expected, *, complete):
     if actual.keys() - expected.keys() or (complete and actual.keys() != expected.keys()):
         raise ValueError(f"{tag} has an unexpected or incomplete GitHub asset set.")
     for name, asset in actual.items():
-        expected[name].check_remote(asset, tag)
+        expected[name].check_remote(asset, tag, published=not release["draft"])
     return [expected[name] for name in expected.keys() - actual.keys()]
 
 
@@ -276,6 +276,7 @@ def publish(github, tag, commit, version, build, previous, notes, assets, transi
     updated = github.promote_latest(release)
     if updated["draft"] or updated["prerelease"] or updated["tag_name"] != tag:
         raise ValueError("GitHub did not return the published Bark release.")
+    check_remote_assets(github, updated, assets, complete=True)
     require_latest(github, tag)
     if github.tag_commit(tag) != commit:
         raise ValueError(f"The published GitHub tag {tag} does not point to the verified commit.")

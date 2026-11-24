@@ -1,27 +1,25 @@
 #!/bin/bash
 # Licensed under GPL-3.0. See LICENSE.
-# Prepares the two official Bark candidates and the universal Nook transition.
+# Prepares the two official Bark release images and their appcasts.
 # Run on the trusted signing runner from the checkout with both official SDK pins.
 set -euo pipefail
 umask 077
 
-if [[ $# != 4 ]]; then
-  echo "Usage: $0 ARM64_ENGINE X86_64_ENGINE LEGACY_CHECKOUT NEW_ARTIFACT_DIRECTORY" >&2
+if [[ $# != 3 ]]; then
+  echo "Usage: $0 ARM64_ENGINE X86_64_ENGINE NEW_ARTIFACT_DIRECTORY" >&2
   exit 2
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 ARM_ENGINE="$(cd "$1" && pwd -P)"
 INTEL_ENGINE="$(cd "$2" && pwd -P)"
-LEGACY="$(cd "$3" && pwd -P)"
-mkdir -p "$(dirname "$4")"
-OUTPUT="$(cd "$(dirname "$4")" && pwd -P)/$(basename "$4")"
+mkdir -p "$(dirname "$3")"
+OUTPUT="$(cd "$(dirname "$3")" && pwd -P)/$(basename "$3")"
 PYTHON="${BARK_WALK_PYTHON:-python3}"
 BARK_PROFILE="${BARK_ICLOUD_PROFILE:-$HOME/Downloads/Bark_Developer_ID_CloudKit.provisionprofile}"
-VERSION=2.0.0
-BUILD=202611200002
-TAG=bark-v2.0.0
-LEGACY_REVISION=815c69d0f98e0ced5ea1eda90d86063f1423980d
+VERSION="${BARK_RELEASE_VERSION:?}"
+BUILD="${BARK_BUILD_NUMBER:?}"
+TAG="bark-v$VERSION"
 RELEASES=https://github.com/kuzaxak/Bark/releases
 FEED_BASE="$RELEASES/latest/download"
 DOWNLOAD_BASE="$RELEASES/download/$TAG"
@@ -31,17 +29,8 @@ if [[ -e "$OUTPUT" || -L "$OUTPUT" ]]; then
   exit 1
 fi
 
-if [[ "$(git -C "$LEGACY" rev-parse HEAD)" != "$LEGACY_REVISION" ]] ||
-   ! git -C "$LEGACY" diff --quiet HEAD --; then
-  echo "The Nook transition must be a clean checkout of $LEGACY_REVISION." >&2
-  exit 1
-fi
-if [[ -e "$LEGACY/build/release" || -L "$LEGACY/build/release" ]]; then
-  echo "Use a fresh Nook transition checkout without previous release output." >&2
-  exit 1
-fi
 test -f "$BARK_PROFILE"
-: "${RUNNER_TEMP:?}" "${NOOK_PROVISIONING_PROFILE:?}" "${SPARKLE_SIGNING_KEY:?}"
+: "${RUNNER_TEMP:?}" "${SPARKLE_SIGNING_KEY:?}"
 sparkle_key="$SPARKLE_SIGNING_KEY"
 unset SPARKLE_SIGNING_KEY
 
@@ -118,19 +107,6 @@ for arch in arm64 x86_64; do
       --candidate-app "$app" --arch "$arch" --identity "$SIGN_IDENTITY" --require-official --engine "$engine"
   fi
 done
-
-(
-  cd "$LEGACY"
-  SPARKLE_KEY="$sparkle_key" NOOK_RELEASE_TAG="$TAG" ./scripts/release.sh 1.5.5
-)
-legacy_app="$LEGACY/build/release/Nook.app"
-legacy_image="$LEGACY/build/release/feed/Nook-1.5.5-universal.dmg"
-/usr/bin/lipo "$legacy_app/Contents/MacOS/Nook" -verify_arch arm64 x86_64
-/usr/bin/codesign --verify --deep --strict "$legacy_app"
-/usr/bin/codesign --verify --strict "$legacy_image"
-xcrun stapler validate "$legacy_app"
-xcrun stapler validate "$legacy_image"
-cp "$legacy_image" "$LEGACY/build/release/feed/appcast.xml" "$work/artifacts/"
 
 "$PYTHON" -B - "$ROOT" "$work/artifacts" "$OUTPUT" "$qualification_stage" "$qualification_output" <<'PY'
 from pathlib import Path

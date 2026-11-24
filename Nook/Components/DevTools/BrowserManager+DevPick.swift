@@ -17,7 +17,8 @@ extension BrowserManager {
               let owner = window.window, owner === NSApp.keyWindow, owner.attachedSheet == nil,
               let page = frontPage(in: window), !page.isAgentPage,
               let navigation = page.navigation as? ChromiumPageNavigation,
-              tabs.nativePageHost?.isNativeSelection(navigation, in: window) == true else { return nil }
+              tabs.nativePageHost?.isNativeSelection(navigation, in: window) == true ||
+                peekManager.isNativeSelection(page, in: window) else { return nil }
         return (page, navigation)
     }
 

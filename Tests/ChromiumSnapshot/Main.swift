@@ -64,12 +64,18 @@ import Foundation
     func prepareNativeAgentPage(in window:BrowserWindowState) async -> PageSession? {available ? page:nil}
     func existingNativeAgentPage(in window:BrowserWindowState)->PageSession? {available && !page.nativeIsEnding ? page:nil}
 }
+@MainActor final class PeekManager {
+    var selection: PageSession?
+    func isNativeSelection(_ page: PageSession, in window: BrowserWindowState) -> Bool { page === selection }
+}
 @MainActor final class BrowserManager {
     struct Settings { var developerModeEnabled = true }
     let tabs=Tabs();var windowRegistry:Registry?=Registry()
+    let peekManager = PeekManager()
+    var peek: PageSession?
     var nookSettings: Settings? = Settings()
     var handedOff: [DevPick] = []
-    func frontPage(in window: BrowserWindowState) -> PageSession? { tabs.page }
+    func frontPage(in window: BrowserWindowState) -> PageSession? { peek ?? tabs.page }
     func handOff(_ pick: DevPick) { handedOff.append(pick) }
     func showDevToast(_ text: String) {}
 }
@@ -228,6 +234,21 @@ import Foundation
         navigation.pickerHook = { withUnsafeCurrentTask { $0?.cancel() } }
         let cancelled = await Task { await server.callTool("pick", [:]) }.value
         precondition(cancelled["isError"] as? Bool == true && manager.handedOff.count == 1)
+        navigation.pickerHook = nil
+
+        // A Peek card's page is Chromium's selection while the window's layout still holds its tab.
+        let peek = PageSession(), peekNavigation = peek.navigation as! ChromiumPageNavigation
+        peekNavigation.result.json = navigation.result.json
+        manager.peek = peek
+        manager.peekManager.selection = peek
+        let tabStarts = navigation.pickerStarts
+        let inPeek = await server.callTool("pick", [:])
+        precondition(inPeek["isError"] as? Bool == false && peekNavigation.pickerStarts == 1 &&
+                     navigation.pickerStarts == tabStarts && manager.handedOff.count == 2, "Pick Element picks in the Peek in front")
+        manager.peekManager.selection = nil
+        let notPresented = await server.callTool("pick", [:])
+        precondition(notPresented["isError"] as? Bool == true && peekNavigation.pickerStarts == 1 &&
+                     navigation.pickerStarts == tabStarts, "a Peek card Chromium does not present is not picked in")
         print("Dev MCP Chromium pick and selection passed active-page routing, policy and stale reply checks")
     }
 }

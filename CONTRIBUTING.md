@@ -433,12 +433,13 @@ limits and measured changes in the release ticket. The release receipt verifier
 remeasures the download, app and Chromium framework from the supplied DMG.
 [Verify a transferred release candidate](Tests/ChromiumStartup/README.md#verify-a-transferred-release-candidate)
 
-### Release Bark 2.0.0 from GitHub Actions
+### Release Bark from GitHub Actions
 
-Develop Chromium fixes on `release/2.0` and changes to the universal Nook transition on
-`release/1.5.5`. Merge reviewed fixes into `main`, update the pinned transition
-revision when its source changes, and tag that
-commit `bark-v2.0.0-rc.N`, where N is a new positive integer. **Build Bark release**
+Develop Chromium fixes on `release/2.0` and merge reviewed fixes into `main`. For
+version X.Y.Z, set `MARKETING_VERSION` to X.Y.Z and raise `CURRENT_PROJECT_VERSION`,
+the Sparkle build number, in both configurations of `Bark.xcodeproj/project.pbxproj`.
+Add a `## X.Y.Z` section to `CHANGELOG.md`; it becomes the release notes. Tag that
+commit `bark-vX.Y.Z-rc.N`, where N is a new positive integer. **Build Bark release**
 dispatches the tag's commit from the default branch so future runs can restore
 the same Actions cache. The tag and branch tip must match at dispatch. The
 trusted `nook-release` Mac builds both architectures, including the ARM64
@@ -455,12 +456,15 @@ reuse both SDKs. An official compile continues independent work until eight buil
 steps fail or it runs out of work. Any failure blocks SDK packaging. Fix the
 reported errors and push a new candidate tag. The previous tag remains a record of the attempted build.
 
-The signing job packages two Bark DMGs and the universal Nook transition with
-the established Developer ID, notary and Sparkle credentials. The release job
-then commits the exact paired SDK pins, creates `bark-v2.0.0`, uploads a GitHub
-draft and promotes it to Latest after checking its asset digests. Latest must
-serve `appcast.xml`, `bark-macos-arm64.xml` and `bark-macos-x86_64.xml`. The
-release runs no signed walks; test the published build by hand.
+The signing job packages two Bark DMGs with the established Developer ID, notary
+and Sparkle credentials. The release job then commits the exact paired SDK pins
+if they changed, creates `bark-vX.Y.Z`, uploads a GitHub draft and promotes it to
+Latest after checking its asset digests. The highest earlier `bark-vX.Y.Z` tag
+must be the current Latest. Latest must serve `appcast.xml`,
+`bark-macos-arm64.xml` and `bark-macos-x86_64.xml`. Nook 1.5.4 reads
+`appcast.xml`, which offers the Nook 1.5.5 transition published with
+`bark-v2.0.0`, so every release uploads that feed unchanged. The release runs no
+signed walks; test the published build by hand.
 
 To qualify a **Build Bark release** run whose package job succeeded, run
 `gh workflow run bark-release-qualification.yml --ref release/2.0 -f run=<run ID> -f arch=both`.

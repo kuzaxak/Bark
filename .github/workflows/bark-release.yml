@@ -2,11 +2,11 @@ name: Build Bark release
 
 on:
   push:
-    tags: ['bark-v2.0.0-rc.*']
+    tags: ['bark-v*-rc.*']
   workflow_dispatch:
     inputs:
       candidate:
-        description: Immutable Bark 2.0.0 candidate tag on the default branch
+        description: Immutable bark-vX.Y.Z-rc.N candidate tag on the default branch
         required: true
         type: string
 
@@ -28,7 +28,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^bark-v2\.0\.0-rc\.[1-9][0-9]*$ ]]
+          [[ "$GITHUB_REF_NAME" =~ ^bark-v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]
           gh workflow run bark-release.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" -f candidate="$GITHUB_REF_NAME"
 
   build:
@@ -42,6 +42,8 @@ jobs:
       cancel-in-progress: false
     outputs:
       source: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+      build: ${{ steps.source.outputs.build }}
     env:
       CANDIDATE_TAG: ${{ inputs.candidate }}
     steps:
@@ -56,9 +58,21 @@ jobs:
           CONFIGURED_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
         run: |
           set -euo pipefail
-          [[ "$CANDIDATE_TAG" =~ ^bark-v2\.0\.0-rc\.[1-9][0-9]*$ ]]
+          [[ "$CANDIDATE_TAG" =~ ^bark-v([0-9]+\.[0-9]+\.[0-9]+)-rc\.[1-9][0-9]*$ ]]
+          version="${BASH_REMATCH[1]}"
           test "$(git rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")" = "$GITHUB_SHA"
-          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          project=Bark.xcodeproj/project.pbxproj
+          test "$(sed -n 's/^[[:space:]]*MARKETING_VERSION = \(.*\);$/\1/p' "$project" | sort -u)" = "$version" || {
+            echo "Set MARKETING_VERSION to $version in $project before tagging $CANDIDATE_TAG." >&2
+            exit 1
+          }
+          build="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION = \(.*\);$/\1/p' "$project" | sort -u)"
+          [[ "$build" =~ ^[1-9][0-9]*$ ]]
+          {
+            echo "sha=$GITHUB_SHA"
+            echo "version=$version"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
           sdk="${CONFIGURED_SDK:-$HOME/Library/Caches/BarkSDK/toolchains/MacOSX26.5-25F70/MacOSX26.5.sdk}"
           python="${CONFIGURED_WALK_PYTHON:-$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python}"
           test -d "$sdk"
@@ -120,25 +134,22 @@ jobs:
         run: |
           "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch arm64 --engine "$ARM_ENGINE" --require-official --install
           "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch x86_64 --engine "$INTEL_ENGINE" --require-official --install
-      - name: Check out the released Nook source with the transition updater
-        run: |
-          git worktree add --detach "$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 815c69d0f98e0ced5ea1eda90d86063f1423980d
-      - name: Build and notarize the Intel, Apple Silicon and transition images
+      - name: Build and notarize the Intel and Apple Silicon images
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          NOOK_PROVISIONING_PROFILE: ${{ secrets.NOOK_PROVISIONING_PROFILE }}
           SPARKLE_SIGNING_KEY: ${{ secrets.SPARKLE_SIGNING_KEY }}
+          BARK_RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          BARK_BUILD_NUMBER: ${{ needs.build.outputs.build }}
           BARK_ICLOUD_PROFILE: ${{ vars.BARK_ICLOUD_PROFILE }}
           ARM_ENGINE: ${{ steps.engines.outputs.arm64-engine }}
           INTEL_ENGINE: ${{ steps.engines.outputs.x86_64-engine }}
           BARK_QUALIFICATION_OUTPUT: ${{ runner.temp }}/bark-qualification-kits
         run: |
-          caffeinate -i scripts/prepare-bark-release.sh "$ARM_ENGINE" "$INTEL_ENGINE" \
-            "$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$RUNNER_TEMP/bark-release-assets"
+          caffeinate -i scripts/prepare-bark-release.sh "$ARM_ENGINE" "$INTEL_ENGINE" "$RUNNER_TEMP/bark-release-assets"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bark-release-assets
@@ -168,11 +179,6 @@ jobs:
           path: ${{ steps.engines.outputs.metadata }}
           if-no-files-found: error
           overwrite: true
-      - name: Release the temporary Nook source checkout
-        if: always()
-        run: |
-          legacy="$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          if [[ -d "$legacy" ]]; then git worktree remove --force "$legacy"; fi
       # actions/checkout cannot clean the sealed, read-only SDK trees out of this shared workspace.
       - name: Remove the sealed SDK pair from the workspace
         if: always()
@@ -191,6 +197,8 @@ jobs:
     env:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       SOURCE_COMMIT: ${{ needs.build.outputs.source }}
+      BARK_RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      BARK_BUILD_NUMBER: ${{ needs.build.outputs.build }}
       BARK_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

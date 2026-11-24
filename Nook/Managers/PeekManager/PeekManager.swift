@@ -79,6 +79,17 @@ final class PeekManager {
         return isNativePresented(entry)
     }
 
+    /// `page` is the Peek `window` shows and Chromium's selected page there, while the window's
+    /// layout still holds the tab under it.
+    func isNativeSelection(_ page: PageSession, in window: BrowserWindowState) -> Bool {
+        guard let tab = window.selectedItemID, let entry = slots.page(tab: tab, window: window.id),
+              entry.page === page, isNativePresented(entry),
+              let native = page.navigation as? ChromiumPageNavigation,
+              let source = entry.source?.navigation as? ChromiumPageNavigation,
+              let host = browserManager?.tabs.nativePageHost as? ChromiumNativePageHost else { return false }
+        return host.isNativePeekSelection(native, source: source, in: window)
+    }
+
     func completeNativeAdoption(tab: Int32) {
         guard let entry = slots.values.first(where: {
             ($0.page.navigation as? ChromiumPageNavigation)?.nativeTabID == tab && !$0.page.isDetached

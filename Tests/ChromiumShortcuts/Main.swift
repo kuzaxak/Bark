@@ -70,6 +70,8 @@ enum Check {
             precondition(defaults.contains { $0.action == action && $0.keyCombination.key.isEmpty }, "\(action) is listed unbound, so Settings offers it")
         }
         migrationCases(defaults: defaults)
+        zoomInKeyCases(defaults: defaults)
+        zoomInMigrationCases(defaults: defaults)
         print("PASS")
     }
 
@@ -156,6 +158,79 @@ enum Check {
                      "Open Library is listed unbound, so Settings offers it: \(merged.values.filter { $0.action == .openLibrary })")
         precondition(merged.filter { $0.key != "none:open_library" } == taken, "Every saved shortcut stays as the person set it")
     }
+}
+
+/// The shortcut a key press runs, as KeyboardShortcutManager looks it up.
+private func action(typing typed: String, keyCode: UInt16, _ flags: NSEvent.ModifierFlags,
+                    in shortcuts: [KeyboardShortcut]) -> ShortcutAction? {
+    let byKey = Dictionary(shortcuts.filter { !$0.keyCombination.key.isEmpty }.map { ($0.lookupKey, $0.action) },
+                           uniquingKeysWith: { first, _ in first })
+    guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                                       context: nil, characters: typed, charactersIgnoringModifiers: typed,
+                                       isARepeat: false, keyCode: keyCode) else { return nil }
+    return KeyCombination.lookupKeys(for: event).lazy.compactMap { byKey[$0] }.first
+}
+
+/// Zoom In is the key right of 0 on a US keyboard (kVK_ANSI_Equal, 24), which types = and with
+/// Shift +, and the + key that Nordic, Estonian (27) and German (30) layouts have.
+private func zoomInKeyCases(defaults: [KeyboardShortcut]) {
+    precondition(action(typing: "=", keyCode: 24, [.command], in: defaults) == .zoomIn, "US Command-= zooms in")
+    precondition(action(typing: "+", keyCode: 24, [.command, .shift], in: defaults) == .zoomIn, "US Command-Shift-= types + and zooms in")
+    precondition(action(typing: "+", keyCode: 27, [.command], in: defaults) == .zoomIn, "Nordic and Estonian Command-+ zooms in")
+    precondition(action(typing: "+", keyCode: 30, [.command], in: defaults) == .zoomIn, "German Command-+ zooms in")
+    precondition(action(typing: "-", keyCode: 27, [.command], in: defaults) == .zoomOut, "US Command-- zooms out")
+    precondition(action(typing: "+", keyCode: 24, [.control, .shift], in: defaults) == .addSplitView, "Control-Shift-= stays Add Split View")
+    precondition(action(typing: "+", keyCode: 24, [.shift], in: defaults) == nil, "Shift alone types +")
+    precondition(defaults.first { $0.action == .zoomIn }?.keyCombination.displayString == "⌘=", "Settings shows the key pressed")
+}
+
+@MainActor final class ShortcutDefaults {
+    var values: [String: Any] = [:]
+    func integer(forKey key: String) -> Int { values[key] as? Int ?? 0 }
+    func data(forKey key: String) -> Data? { values[key] as? Data }
+    func set(_ value: Any?, forKey key: String) { values[key] = value }
+}
+
+/// Version 19's migration: Zoom In leaves Command-+, which no US key press is, for Command-=, and
+/// every shortcut the person set stays as set.
+@MainActor private func zoomInMigrationCases(defaults: [KeyboardShortcut]) {
+    let commandPlus = KeyCombination(key: "+", modifiers: [.command])
+    let commandEquals = KeyCombination(key: "=", modifiers: [.command])
+    func load(_ change: (inout [KeyboardShortcut]) -> Void = { _ in }) -> (ShortcutStoreFixture, ShortcutDefaults) {
+        var list = defaults
+        list[list.firstIndex { $0.action == .zoomIn }!].keyCombination = commandPlus
+        change(&list)
+        let store = ShortcutDefaults()
+        store.set(try! JSONEncoder().encode(list), forKey: "keyboard.shortcuts")
+        store.set(18, forKey: "keyboard.shortcuts.version")
+        return (ShortcutStoreFixture(userDefaults: store), store)
+    }
+    func rebind(_ action: ShortcutAction, to key: KeyCombination) -> (inout [KeyboardShortcut]) -> Void {
+        { list in list[list.firstIndex { $0.action == action }!].keyCombination = key }
+    }
+    func keys(_ shortcuts: [KeyboardShortcut]) -> [ShortcutAction: KeyCombination] {
+        Dictionary(shortcuts.map { ($0.action, $0.keyCombination) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    let (moved, store) = load()
+    precondition(moved.shortcut(for: .zoomIn)?.keyCombination == commandEquals, "a version-18 Zoom In on Command-+ moves to Command-=")
+    precondition(action(typing: "=", keyCode: 24, [.command], in: moved.shortcuts) == .zoomIn, "and US Command-= runs it")
+    precondition(keys(moved.shortcuts).filter { $0.key != .zoomIn } == keys(defaults).filter { $0.key != .zoomIn },
+                 "every other shortcut stays")
+    let saved = try! JSONDecoder().decode([KeyboardShortcut].self, from: store.data(forKey: "keyboard.shortcuts")!)
+    precondition(keys(saved)[.zoomIn] == commandEquals && store.integer(forKey: "keyboard.shortcuts.version") == 19,
+                 "the move is saved once")
+
+    let chosen = KeyCombination(key: "z", modifiers: [.command, .option])
+    precondition(load(rebind(.zoomIn, to: chosen)).0.shortcut(for: .zoomIn)?.keyCombination == chosen,
+                 "a Zoom In key the person chose stays")
+    let (taken, _) = load(rebind(.toggleBookmark, to: commandEquals))
+    precondition(taken.shortcut(for: commandEquals)?.action == .toggleBookmark &&
+                 taken.shortcut(for: .zoomIn)?.keyCombination == commandPlus,
+                 "Command-= stays with the action the person gave it")
+    precondition(action(typing: "+", keyCode: 27, [.command], in: taken.shortcuts) == .zoomIn &&
+                 action(typing: "+", keyCode: 24, [.command, .shift], in: taken.shortcuts) == .zoomIn,
+                 "and Command-+ still zooms in")
 }
 
 /// A child window that takes the keys, as a page's bubble, prompt or dialog does, acts for the

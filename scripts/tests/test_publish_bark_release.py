@@ -23,6 +23,7 @@ class FakeGitHub:
         self.promotions = 0
         self.break_upload = False
         self.race_latest = False
+        self.stale_published_urls = False
 
     def find(self, tag):
         return self.releases.get(tag)
@@ -40,12 +41,15 @@ class FakeGitHub:
 
     def create_draft(self, tag, commit, version, notes):
         entry = {"tag_name": tag, "target_commitish": commit, "draft": True, "prerelease": False,
-                 "body": notes, "assets": {}}
+                 "body": notes, "assets": {}, "untagged": f"untagged-{len(self.releases) + 1:040x}"}
         self.releases[tag] = entry
         return entry
 
     def assets(self, entry):
-        return entry["assets"]
+        draft = entry["draft"] or self.stale_published_urls
+        location = entry["untagged"] if draft else entry["tag_name"]
+        return {name: {**asset, "browser_download_url": f"{release.GITHUB}/releases/download/{location}/{name}"}
+                for name, asset in entry["assets"].items()}
 
     def upload(self, tag, assets):
         self.uploads.append([asset.path.name for asset in assets])
@@ -54,10 +58,7 @@ class FakeGitHub:
             found = self.releases[tag]["assets"]
             if name in found:
                 raise AssertionError("upload tried to replace an existing asset")
-            found[name] = {
-                "state": "uploaded", "size": asset.size, "digest": asset.digest,
-                "browser_download_url": release.download_url(tag, name),
-            }
+            found[name] = {"state": "uploaded", "size": asset.size, "digest": asset.digest}
             self.contents[tag, name] = asset.path.read_bytes()
             if self.break_upload:
                 raise ValueError("interrupted upload")
@@ -116,6 +117,23 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(set(self.github.uploads[-1]), self.assets.keys() - partial)
         self.assertEqual(self.github.latest_tag, self.tag)
         self.assertEqual(self.github.promotions, 1)
+        self.publish()
+        self.assertEqual(self.github.promotions, 1)
+
+    def test_promotes_a_draft_whose_assets_have_untagged_urls(self):
+        self.publish()
+        self.assertFalse(self.github.find(self.tag)["draft"])
+        self.assertEqual(self.github.latest_tag, self.tag)
+        self.assertEqual(self.github.promotions, 1)
+
+    def test_refuses_published_assets_without_their_tag_urls(self):
+        self.github.stale_published_urls = True
+        with self.assertRaisesRegex(ValueError, "differs"):
+            self.publish()
+        self.assertEqual(self.github.promotions, 1)
+        with self.assertRaisesRegex(ValueError, "differs"):
+            self.publish()
+        self.github.stale_published_urls = False
         self.publish()
         self.assertEqual(self.github.promotions, 1)
 
